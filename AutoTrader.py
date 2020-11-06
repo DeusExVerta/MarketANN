@@ -127,11 +127,6 @@ class AutoTrader:
         # for symbol in symbols:     
         #     self.train_model(symbol)
             
-        # Y = self.data_frame.iloc[self.n-1:]
-        # Y = Y.loc[:,Y.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
-        # X = self.n_to_1_mapping(self.n,self.data_frame) #.iloc[:-9].set_index(Y.index)
-        # data = self.data_frame.iloc[:-self.n].to_numpy()
-        # targets = self.data_frame.iloc[self.n:].to_numpy()
         self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), self.data_frame.to_numpy(),
             	length=self.n, sampling_rate=1,stride=1, batch_size=10)
         
