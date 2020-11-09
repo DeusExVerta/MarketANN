@@ -8,7 +8,7 @@ from pytz import timezone
 
 import pandas as pd
 import numpy as np
-# import tensorflow as tf
+import tensorflow as tf
 
 from sklearn import preprocessing as spp
 from sklearn.ensemble import RandomForestRegressor
@@ -37,13 +37,13 @@ class AutoTrader:
        self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f'
        self.window_size = 100
        self.scaler = {}
-       self.random_forest_model = {}
-       self.rf_score = {}
-       self.linear_model = {}
-       self.linear_score = {}
-       self.ann_model = {}
+       # self.random_forest_model = {}
+       # self.rf_score = {}
+       # self.linear_model = {}
+       # self.linear_score = {}
        self.data_frame = pd.DataFrame()
        self.n = 10
+       
     
     def run(self):
         print('Performing First Time Training')
@@ -116,22 +116,15 @@ class AutoTrader:
             logging.info('Training Data Sorted: t =' + self.string_time())
             # TODO: Fill in missing days(weekends, holidays) with interpolated results
             # should remove errors due to variable time differentials between observations.
-            
-            
-            self.data_frame = self.data_frame.interpolate(method = 'time')
-            self.data_frame = self.data_frame.bfill()
         
         
         self.data_frame = self.preprocess(self.data_frame)
         # Train linear and random forest models for each symbol.
         # for symbol in symbols:     
         #     self.train_model(symbol)
-            
-        self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), self.data_frame.to_numpy(),
-            	length=self.n, sampling_rate=1,stride=1, batch_size=10)
-        
-
-        # self.train_neural_network(X,Y)
+        Y = self.data_frame.loc[:,self.data_frame.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]    
+        self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
+             	length=self.n, sampling_rate=1, batch_size=10)
         self.train_neural_network(self.time_data_generator)
     
         
@@ -145,19 +138,18 @@ class AutoTrader:
             
             symbols = self.read_universe()
             data = pd.DataFrame()
-            data = self.get_bar_frame(data_frame = data, symbols = symbols, bar_length = 'day', window_size = self.n+1)
+            data = self.get_bar_frame(data_frame = data, symbols = symbols, bar_length = 'day', window_size = 20)
             #process prediction data
             data = self.preprocess(data,False)
+            targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
+            tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
             
-            data_X = data.iloc[:-self.n].to_numpy()
-            data_target = None #data.iloc[self.n:].to_numpy()
-
-            self.time_data_generator = TimeseriesGenerator(data_X, data_target,
-            	length=self.n, sampling_rate=1,stride=1,
-                batch_size=10) 
-            self.time_data_generator = keras.preprocessing.sequence.pad_sequences(self.time_data_generator)
-            
-            self.pred = self.neural_network.predict_generator(self.time_data_generator)
+            # td = pd.DataFrame()
+            # td = self.get_bar_frame(td,symbols,window_size=2)
+            # td = self.preprocess(td,False)
+            # td = td.iloc[-1].loc[td.index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
+    
+            self.pred = self.neural_network.predict(tdg)
             
             #get our current positions
             logging.info('Getting Positions: t = ' + self.string_time())
@@ -339,28 +331,14 @@ class AutoTrader:
         mean_square_error = np.sum(Y_delta_square)/len(Y_pred)
         print(str.format('MSE: {}', mean_square_error))
         return mean_square_error
-
-    def train_neural_network(self, X, Y, epochs = 10):
-        X_train, X_test, Y_train,Y_test = train_test_split(X,Y, test_size =0.3, shuffle = False)
-        print('\nNeural Network')
-        self.neural_network = Sequential()
-        self.neural_network.add(Dense(len(X.iloc[0]), activation = 'relu'))
-        self.neural_network.add(Dense(10, activation = 'relu'))
-        self.neural_network.add(Dense(len(Y.iloc[0]), activation = 'relu'))
-        self.neural_network.compile('adam',loss = 'mse', metrics = [MeanSquaredError(),RootMeanSquaredError()])
-        self.neural_network.fit(X_train.to_numpy(),Y_train.to_numpy(),epochs = epochs)
-        test_error = self.MSE(self.neural_network,X_test,Y_test)
-        train_error = self.MSE(self.neural_network,X_train,Y_train)
-        self.validation_error = np.subtract(train_error,test_error)
-    
+  
     def train_neural_network(self, generator, epochs = 10):
-        x,y = generator[0]
         self.neural_network = Sequential()
         self.neural_network.add(LSTM(10,input_shape = (10,2530)))
         self.neural_network.add(Dense(10, activation = 'relu'))
-        self.neural_network.add(Dense(len(y), activation = 'relu'))
+        self.neural_network.add(Dense(1010, activation = 'relu'))
         self.neural_network.compile('adam',loss = 'mse', metrics = [MeanSquaredError(),RootMeanSquaredError()])
-        self.neural_network.fit(generator, batch_size = len(generator[0]), steps_per_epoch=len(generator), epochs = epochs)
+        self.neural_network.fit(generator, steps_per_epoch=len(generator), epochs = epochs, use_multiprocessing=True)
 
     
     def read_universe(self):
@@ -372,6 +350,8 @@ class AutoTrader:
         return symbols
 
     def preprocess(self, data_frame, initial = True):
+        self.data_frame = self.data_frame.interpolate(method = 'time')
+        self.data_frame = self.data_frame.bfill()
         data_frame = self.as_deltas(data_frame)
         #Convert weekday into One-Hot categories
         oneHotEncoder = OneHotEncoder(categories= 'auto')
