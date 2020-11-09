@@ -143,13 +143,11 @@ class AutoTrader:
             data = self.preprocess(data,False)
             targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
             tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
-            
+            self.pred = self.neural_network.predict(tdg)
             # td = pd.DataFrame()
             # td = self.get_bar_frame(td,symbols,window_size=2)
             # td = self.preprocess(td,False)
             # td = td.iloc[-1].loc[td.index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
-    
-            self.pred = self.neural_network.predict(tdg)
             
             #get our current positions
             logging.info('Getting Positions: t = ' + self.string_time())
@@ -350,8 +348,8 @@ class AutoTrader:
         return symbols
 
     def preprocess(self, data_frame, initial = True):
-        self.data_frame = self.data_frame.interpolate(method = 'time')
-        self.data_frame = self.data_frame.bfill()
+        data_frame = data_frame.interpolate(method = 'time')
+        data_frame = data_frame.bfill()
         data_frame = self.as_deltas(data_frame)
         #Convert weekday into One-Hot categories
         oneHotEncoder = OneHotEncoder(categories= 'auto')
