@@ -31,7 +31,8 @@ import logging
 class AutoTrader:
     def __init__(self):
        warnings.filterwarnings("ignore")
-       logging.basicConfig(filename='Info.log',level=logging.INFO)
+       gmt = time.gmtime(time.time())
+       logging.basicConfig(filename=str.format('Info_{}_{}_{}.log',gmt.tm_mon,gmt.tm_mday,gmt.tm_year),level=logging.INFO)
        self.api = tradeapi.REST()
        # API datetimes will match this format.
        self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f'
@@ -118,7 +119,7 @@ class AutoTrader:
             # should remove errors due to variable time differentials between observations.
         
         
-        self.data_frame = self.preprocess(self.data_frame)
+        self.data_frame = self.preprocess(self.data_frame,True)
         # Train linear and random forest models for each symbol.
         # for symbol in symbols:     
         #     self.train_model(symbol)
@@ -138,12 +139,13 @@ class AutoTrader:
             
             symbols = self.read_universe()
             data = pd.DataFrame()
-            data = self.get_bar_frame(data_frame = data, symbols = symbols, bar_length = 'day', window_size = 20)
+            data = self.get_bar_frame(data_frame = data, symbols = symbols, bar_length = 'day', window_size = 11)
             #process prediction data
-            data = self.preprocess(data,False)
+            data = self.preprocess(data)
             targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
             tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
-            self.pred = self.neural_network.predict(tdg)
+            self.pred = pd.DataFrame(self.neural_network.predict(tdg))
+            self.pred.set_axis(targets.columns, axis = 'columns', inplace = True)
             # td = pd.DataFrame()
             # td = self.get_bar_frame(td,symbols,window_size=2)
             # td = self.preprocess(td,False)
@@ -155,8 +157,10 @@ class AutoTrader:
             for position in self.positions:
                 symbol = position.symbol
                 
-                high = 0#price* out
-                low = 0#price 
+                #multiply yesterdays high by the fractional predicted gains
+                #to obtain expected high 
+                high = self.pred.loc[0, symbol + '_h']
+                low = self.pred.loc[0, symbol + '_l']
                 
                 self.api.get_position(symbol)
                 self.api.submit_order(symbol = symbol, qty = 100, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
@@ -182,7 +186,7 @@ class AutoTrader:
                 errors.append(self.validation_error.abs())
             return errors    
         
-    def scale_data(self, data_frame, scaler, initial = True):
+    def scale_data(self, data_frame, scaler, initial = False):
         logging.info('Scaling Data t = '+ self.string_time())
         for data in data_frame:
             if initial:
@@ -202,6 +206,17 @@ class AutoTrader:
                         index+=1
         return data_frame
         logging.info('Data Normalized: t = '+self.string_time())
+    
+    #takes an integer indexed 
+    def inverse_scaling(self,data_frame,scaler):
+        logging.info('Unscaling Data t = '+ self.string_time())
+        for data in data_frame:
+            if not data.startswith('t_'):
+                scaled = scaler[data].inverse_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
+                for i in range(len(scaled)):
+                    data_frame.loc[i,data] = scaled[i][0]
+                    
+        
 
     def train_model(self, symbol,  linear = True, random_forest = True):
         logging.info(str.format('training models for symbol:{}',symbol))
@@ -300,19 +315,6 @@ class AutoTrader:
     def string_time(self):
         gmt = time.gmtime(time.time())
         return str.format("{}:{}:{}",gmt.tm_hour,gmt.tm_min,gmt.tm_sec)            
-
-#   takes a dataframe and          
-    def n_to_1_mapping(self, n, data_frame):
-        if n==1:
-            return data_frame
-        mapped_frame = pd.DataFrame()
-        for index1 in range(0,len(data_frame)-n+1):
-            temp = pd.DataFrame()
-            for index2 in range(0,n):
-                temp = temp.append(data_frame.iloc[index2+index1])
-            temp = pd.DataFrame(np.array(temp).reshape(1,-1))
-            mapped_frame = mapped_frame.append(temp)
-        return mapped_frame
             
     # calculates a data frame where T1 = T1-T0
     def as_deltas(self, data_frame):
@@ -337,7 +339,7 @@ class AutoTrader:
         self.neural_network.add(Dense(1010, activation = 'relu'))
         self.neural_network.compile('adam',loss = 'mse', metrics = [MeanSquaredError(),RootMeanSquaredError()])
         self.neural_network.fit(generator, steps_per_epoch=len(generator), epochs = epochs, use_multiprocessing=True)
-
+        self.neural_network.save('Network')
     
     def read_universe(self):
         symbols = list()
@@ -347,7 +349,7 @@ class AutoTrader:
         self.universe_file.close()
         return symbols
 
-    def preprocess(self, data_frame, initial = True):
+    def preprocess(self, data_frame, initial = False):
         data_frame = data_frame.interpolate(method = 'time')
         data_frame = data_frame.bfill()
         data_frame = self.as_deltas(data_frame)
