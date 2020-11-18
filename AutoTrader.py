@@ -5,6 +5,9 @@ import time
 import threading
 import warnings
 from pytz import timezone
+from collections import deque
+import random
+from pickle import dump,load
 
 import pandas as pd
 import numpy as np
@@ -28,6 +31,11 @@ from keras.metrics import MeanSquaredError
 
 import logging
 
+#TODO: Fill in missing days(weekends, holidays) with interpolated results
+# should remove errors due to variable time differentials between observations.
+#TODO: Handle Connection loss by reconnection attempt.
+#TODO: Handle termination and restarting by checking for existence of NNfiles
+#TODO: Convert to Alpaca bars.df instead of bars_to_data_frame
 class AutoTrader:
     def __init__(self):
        warnings.filterwarnings("ignore")
@@ -35,14 +43,14 @@ class AutoTrader:
        logging.basicConfig(filename=str.format('Info_{}_{}_{}.log',gmt.tm_mon,gmt.tm_mday,gmt.tm_year),level=logging.INFO)
        self.api = tradeapi.REST()
        # API datetimes will match this format.
-       self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f'
+       self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f%z'
        self.window_size = 100
        self.scaler = {}
+       
        # self.random_forest_model = {}
        # self.rf_score = {}
        # self.linear_model = {}
        # self.linear_score = {}
-       self.data_frame = pd.DataFrame()
        self.n = 10
        
     
@@ -51,141 +59,177 @@ class AutoTrader:
         logging.info('\n----------------------------------------\nPerforming First Time Training: t = ' + self.string_time())
         logging.info('Canceling Orders: t = ' + self.string_time())
         self.api.cancel_all_orders()
-        # Check if account is restricted from trading.
-        if self.api.get_account().trading_blocked:
-           print('Account is currently restricted from trading.')
-           #TODO:should break out here if account blocked no point in trying ot trade.
         
-        
-        #if the universe file does not exist yet create a universe file
-        #containing a list of symbols trading between 5 and 25 USD.
-        #ISSUE:this is very slow and prediction results are poor.
-        symbols = list()
-        if not path.exists('universe'):
-            logging.info('No Universe File Found, Creating Universe:\n')
-            logging.info('Fetching Assets: t = '+ self.string_time())
-            assets = self.api.list_assets(status = 'active')
-            logging.info('Assets Fetched: t = ' + self.string_time())            
-            for asset in assets:              
-                if asset.tradable == True:
-                    symbols.append(asset.symbol)
-            #check last price to filter to only tradeable assets that fall within our price range
-            logging.info('Checking Asset Trade Range: t = ' + self.string_time())
-            self.data_frame = self.get_bar_frame(self.data_frame, symbols)
-            logging.info('Data Fetched: t = ' + self.string_time())
-            self.data_frame = self.data_frame.sort_index().iloc[-self.window_size:]
-            logging.info('Data Sorted: t = ' + self.string_time())
-            self.data_frame = self.data_frame.interpolate(method = 'time')
-            self.data_frame = self.data_frame.bfill()
-
-            pop_indx = []
-            suffixes = {'_o','_h','_l','_c','_v'}
-            for symbol in symbols:
-                #check if symbol has any data
-                for suffix in suffixes:
-                    if not pop_indx.__contains__(symbol):
-                        if not symbol+suffix in self.data_frame.columns:
-                            pop_indx.append(symbol)
-                        elif not suffix.startswith('_v'):
-                            closes = self.data_frame.loc[:,symbol + suffix].fillna(0)
-                            if closes.isna().sum()>0:
-                                pop_indx.append(symbol)
-                            elif closes.gt(25).sum()>0:
-                                pop_indx.append(symbol)
-                            elif closes.lt(5).sum()>0:
-                                pop_indx.append(symbol)
-            logging.info('Symbols outside range identified: Count = ' + str(len(pop_indx)))
-            for symbol in pop_indx:
-                symbols.remove(symbol)
-                for suffix in suffixes:
-                    if symbol+suffix in self.data_frame.columns:
-                        self.data_frame.pop(symbol + suffix)
-            logging.info('Symbols removed: t = ' + self.string_time())
-
-            self.universe_file = open('universe','w')
-            for symbol in symbols:
-                self.universe_file.write(symbol+ '\n')
-            self.universe_file.close()
-        else:
-            symbols = self.read_universe()
-            #convert bar entity data into raw numerical data
-            logging.info('Fetching Data For Training: t = ' + self.string_time())
-            self.data_frame = self.get_bar_frame(self.data_frame, symbols)
-
-            logging.info('Training Data Fetched: t = ' + self.string_time())
-            self.data_frame = self.data_frame.sort_index() #.iloc[-self.window_size:]
-            logging.info('Training Data Sorted: t =' + self.string_time())
-            # TODO: Fill in missing days(weekends, holidays) with interpolated results
-            # should remove errors due to variable time differentials between observations.
-        
-        
-        self.data_frame = self.preprocess(self.data_frame,True)
-        # Train linear and random forest models for each symbol.
-        # for symbol in symbols:     
-        #     self.train_model(symbol)
-        Y = self.data_frame.loc[:,self.data_frame.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]    
-        self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
-             	length=self.n, sampling_rate=1, batch_size=10)
-        self.train_neural_network(self.time_data_generator)
+        if not path.exists('Network'):
+            #if the universe file does not exist yet create a universe file
+            #containing a list of symbols trading between 5 and 25 USD.
+            #ISSUE:this is very slow and prediction results are poor.
+            symbols = list()
+            if not path.exists('universe'):
+                logging.info('No Universe File Found, Creating Universe:\n')
+                logging.info('Fetching Assets: t = '+ self.string_time())
+                assets = self.api.list_assets(status = 'active')
+                logging.info('Assets Fetched: t = ' + self.string_time())            
+                for asset in assets:              
+                    if asset.tradable == True:
+                        symbols.append(asset.symbol)
+                #check last price to filter to only tradeable assets that fall within our price range
+                logging.info('Checking Asset Trade Range: t = ' + self.string_time())
+                self.data_frame = self.get_bar_frame(symbols)
+                logging.info('Data Fetched: t = ' + self.string_time())
+                self.data_frame = self.data_frame.sort_index().iloc[-self.window_size:]
+                #drop the incomplete bar containing today's data
+                self.data_frame = self.data_frame.loc[pd.Timestamp.today(tz ='EST').floor('D')]
+                logging.info('Data Sorted: t = ' + self.string_time())
+                self.data_frame = self.data_frame.interpolate(method = 'time')
+                self.data_frame = self.data_frame.bfill()
     
-        
-        while False:
+                pop_indx = []
+                suffixes = {'_o','_h','_l','_c','_v'}
+                # names = {'open','high','low','close','volume'}
+                for symbol in symbols:
+                    #check if symbol has any data
+                    for suffix in suffixes:
+                        if not pop_indx.__contains__(symbol):
+                            if not symbol+suffix in self.data_frame.columns:
+                                pop_indx.append(symbol)
+                            elif not suffix.startswith('_v'):
+                                closes = self.data_frame.loc[:,symbol + suffix].fillna(0)
+                                if closes.isna().sum()>0:
+                                    pop_indx.append(symbol)
+                                elif closes.gt(25).sum()>0:
+                                    pop_indx.append(symbol)
+                                elif closes.lt(5).sum()>0:
+                                    pop_indx.append(symbol)
+                logging.info('Symbols outside range identified: Count = ' + str(len(pop_indx)))
+                for symbol in pop_indx:
+                    symbols.remove(symbol)
+                    for suffix in suffixes:
+                        if symbol+suffix in self.data_frame.columns:
+                            self.data_frame.pop(symbol + suffix)
+                logging.info('Symbols removed: t = ' + self.string_time())
+    
+                self.universe_file = open('universe','w')
+                for symbol in symbols:
+                    self.universe_file.write(symbol+ '\n')
+                self.universe_file.close()
+            else:
+                self.symbols = self.read_universe()
+                #convert bar entity data into raw numerical data
+                logging.info('Fetching Data For Training: t = ' + self.string_time())
+                self.data_frame = self.get_bar_frame(self.symbols)
+    
+                logging.info('Training Data Fetched: t = ' + self.string_time())
+                self.data_frame = self.data_frame.sort_index() #.iloc[-self.window_size:]
+                logging.info('Training Data Sorted: t =' + self.string_time())
+                
+            
+            
+            self.data_frame = self.preprocess(self.data_frame,True)
+            
+            dump(self.scaler,open('scaler.pkl','wb'))
+            # Train linear and random forest models for each symbol.
+            # for symbol in self.symbols:     
+            #     self.train_model(symbol)
+            Y = self.data_frame.loc[:,self.data_frame.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]    
+            self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
+                 	length=self.n, sampling_rate=1, batch_size=10)
+            self.train_neural_network(self.time_data_generator)
+        else:
+            self.neural_network = keras.models.load_model('Network')
+            self.symbols = self.read_universe()
+            self.scaler = load(open('scaler.pkl','rb'))
+            
+            
+        while True:
             tAMO = threading.Thread(target = self.await_market_open())
             tAMO.start()
             tAMO.join()
-            time.sleep(60*15)
-                            
+            # Check if account is restricted from trading.
+            if self.api.get_account().trading_blocked:
+               print('Account is currently restricted from trading!')
+               #TODO:should break out here if account blocked no point in trying ot trade.
+            
+            today = pd.Timestamp.today(tz = 'EST').floor('D')
             #the following should execute only once the market is open
             
-            symbols = self.read_universe()
-            data = pd.DataFrame()
-            data = self.get_bar_frame(data_frame = data, symbols = symbols, bar_length = 'day', window_size = 11)
-            #process prediction data
-            data = self.preprocess(data)
-            targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
-            tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
-            self.pred = pd.DataFrame(self.neural_network.predict(tdg))
-            self.pred.set_axis(targets.columns, axis = 'columns', inplace = True)
-            # td = pd.DataFrame()
-            # td = self.get_bar_frame(td,symbols,window_size=2)
-            # td = self.preprocess(td,False)
-            # td = td.iloc[-1].loc[td.index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
             
+            prices = self.get_bar_frame(symbols = self.symbols, window_size = 11).loc[:today]
+            #process prediction data, dropping today's incomplete bar 
+            pred = self.timeseries_prediction(prices)
             #get our current positions
             logging.info('Getting Positions: t = ' + self.string_time())
-            self.positions = self.api.list_positions()
-            for position in self.positions:
-                symbol = position.symbol
-                
-                #multiply yesterdays high by the fractional predicted gains
-                #to obtain expected high 
-                high = self.pred.loc[0, symbol + '_h']
-                low = self.pred.loc[0, symbol + '_l']
-                
-                self.api.get_position(symbol)
-                self.api.submit_order(symbol = symbol, qty = 100, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
-    #        #3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
-    #        #4.	Whenever a liquidity threshold is reached while the market is open, buy securities with greatest estimated percentage gain from now to tomorrow.
-    #        problem: selling symbols with good gains
-    #        Create a queue of symbols based on predicted gains
-    #        for symbol in symbols:
-    #            
-    #           self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'market',time_in_force = 'day')
-    #        #5.	Cancel open orders 15 minutes* before market close.
-    #        self.api.cancel_all_orders()
-    
+            positions = self.api.list_positions()
+            orders = self.api.list_orders('closed',after = today.strftime(self.api_time_format)[:-2]+':00')
+            #if we havent made any orders today.
+            #could cause issues with manual trading or other scripts/bots
+            if len(orders)<=0:
+                for position in positions:
+                    symbol = position.symbol
+                    qty = int(position.qty)
+                    #multiply the last trading day's high&low by the fractional 
+                    # predicted gains or losses to obtain expected high and low
+                    high = prices.iloc[-1].loc[symbol+'_h']*(1+pred.loc[0, symbol + '_h'])
+                    low = prices.iloc[-1].loc[symbol+'_l']*(1+pred.loc[0, symbol + '_l'])
+                    
+                    if high<=low:
+                        print(str.format('Sym:{} high({})<=low({})', symbol,high,low))
+                        self.api.submit_order(symbol,qty,'sell','limit','day',high)
+                    else:
+                        #3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
+                        self.api.submit_order(symbol = symbol, qty = qty, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
 
-    def validation_test(self, epochs):
-            errors = []
-            #TODO:convert to timeseries generator.
-            X = self.data_frame.iloc[:-self.n]
-            Y = self.data_frame.iloc[self.n:,5:]
-            Y = Y.loc[:,Y.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
-            for i in range(0,10):
-                self.train_neural_network(X,Y,epochs)
-                errors.append(self.validation_error.abs())
-            return errors    
-        
+            #4. every minute while the market is open,from approximately midday until 15 minutes before 
+            # market close, predict gains using today's data and create a queue
+            # of symbols in order of predicted gains.
+                # if we have more than 5% of our equity as available cash, make a
+            # limit order for the next symbol in the queue for <%5 of our equity. 
+            tAMD = threading.Thread(target = self.await_midday())
+            tAMD.start()
+            tAMD.join()
+            clock = self.api.get_clock()
+            next_close = clock.next_close
+            while pd.Timestamp.now(tz='EST')<(next_close-pd.Timedelta(15,'min')).tz_convert('EST'):
+                try:
+                    account = self.api.get_account()
+                except ConnectionError:
+                    time.sleep(3)
+                    account = self.api.get_account()
+                #set our maximum buy order value to 5% of our total equity
+                self.MaxOrderCost = float(account.equity) * 0.05
+                
+                cash = float(account.cash) 
+                orders = self.api.list_orders()
+                for order in orders:
+                    if order.side == 'buy':
+                        cash = cash - (float(order.limit_price)*int(order.qty))
+                if cash>=self.MaxOrderCost:
+                    prices.append(self.get_bar_frame(self.symbols, window_size=1).loc[today])
+                    pred = self.timeseries_prediction(prices)
+                    queue = deque(pred.loc[:,pred.loc[0].index.map(lambda t: t.endswith('_h'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
+                    while cash>=self.MaxOrderCost:
+                        symbol = queue.pop()[:-2]
+                        price = prices.loc[today].loc[symbol+'_c']
+                        qty = (self.MaxOrderCost//price)
+                        self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
+                        #adjust cash for new open order
+                        cash  = cash-price*qty
+                        #remove data
+                    prices = prices.loc[:today]
+                time.sleep(60)
+            #5.	Cancel open orders 15 minutes* before market close.
+            self.api.cancel_all_orders()
+            
+
+    def timeseries_prediction(self, data_frame):
+        data = self.preprocess(data_frame)
+        targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
+        tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
+        pred = pd.DataFrame(self.neural_network.predict(tdg))
+        pred.set_axis(targets.columns, axis = 'columns', inplace = True)
+        self.inverse_scaling(pred,self.scaler)
+        return pred
+    
     def scale_data(self, data_frame, scaler, initial = False):
         logging.info('Scaling Data t = '+ self.string_time())
         for data in data_frame:
@@ -207,7 +251,7 @@ class AutoTrader:
         return data_frame
         logging.info('Data Normalized: t = '+self.string_time())
     
-    #takes an integer indexed 
+    #takes an integer indexed data frame and returns that data frame unscaled
     def inverse_scaling(self,data_frame,scaler):
         logging.info('Unscaling Data t = '+ self.string_time())
         for data in data_frame:
@@ -222,10 +266,8 @@ class AutoTrader:
         logging.info(str.format('training models for symbol:{}',symbol))
         X = self.n_to_1_mapping(5, self.data_frame.loc[:,symbol+'_c':symbol+'_v'])
         self.train_model_X(X,symbol, linear, random_forest)
-        #TODO:implement feature selection.
         
         
-        #TODO: Paralellization of training
     def train_model_X(self, X, symbol, linear = True, random_forest = True):
         Y = self.data_frame.iloc[self.n:].loc[:,symbol + '_h':symbol + '_l']
         X_train, X_test, Y_train, Y_test = train_test_split(X,Y, test_size = 0.25)
@@ -252,7 +294,8 @@ class AutoTrader:
         
     #obtain OHLCV bar data for securities returns a DataFrame for the past 
     #{window_size} {bar_length} indexed by symbol and day
-    def get_bar_frame(self, data_frame, symbols, algo_time = None, window_size = None, bar_length = 'day', offset = '-04:00'):
+    def get_bar_frame(self, symbols, algo_time = None, window_size = None, bar_length = 'day'):
+        data_frame = pd.DataFrame()
         if window_size == None:
             window_size = self.window_size
         if not isinstance(bar_length,str):
@@ -262,10 +305,10 @@ class AutoTrader:
         formatted_time = 0
         if algo_time is not None:
             # Convert the time to something compatable with the Alpaca API.
-            formatted_time = algo_time.date().strftime(self.api_time_format+offset)
+            formatted_time = algo_time.date().strftime(self.api_time_format[:-2]+':00')
         else:
             formatted_time = self.api.get_clock().timestamp.to_pydatetime().astimezone(timezone('EST'))     
-        delta = datetime.timedelta(days = window_size)
+        delta = pd.Timedelta(window_size,'D')
         logging.info('Getting Bars: t = ' + self.string_time())
         while index < len(symbols):
             symbol_batch = symbols[index:index+batch_size]
@@ -290,13 +333,29 @@ class AutoTrader:
     def await_market_open(self):
         clock = self.api.get_clock()
         while(not clock.is_open):
-          openingTime = clock.next_open.replace(tzinfo=datetime.timezone.utc).timestamp()
-          currTime = clock.timestamp.replace(tzinfo=datetime.timezone.utc).timestamp()
-          timeToOpen = int((openingTime - currTime) / 60)
-          print(str(timeToOpen) + " minutes til market open.")
-          time.sleep(60)
-          clock = self.api.get_clock()
-
+            try:
+                openingTime = clock.next_open.replace(tzinfo=datetime.timezone.utc).timestamp()
+                currTime = clock.timestamp.replace(tzinfo=datetime.timezone.utc).timestamp()
+                timeToOpen = int((openingTime - currTime) / 60)
+                print(str(timeToOpen) + " minutes til market open.")
+                time.sleep(60)
+                clock = self.api.get_clock()
+            except ConnectionError:
+                time.sleep(60)
+                clock = self.api.get_clock()
+        
+    def await_midday(self):
+        today = pd.Timestamp.today()
+        clock = self.api.get_clock()
+        offset = pd.Timedelta(random.randint(-30,30),'m')
+        while (clock.timestamp.astimezone('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
+            try:
+                time.sleep(60)
+                clock = self.api.get_clock()
+            except ConnectionError:
+                self.api = tradeapi.REST()
+                clock = self.api.get_clock()
+            
     #convert bars to a time indexed dataframe
     def bars_to_data_frame(self, bars):
         temp_data_frame = pd.DataFrame()
@@ -316,14 +375,15 @@ class AutoTrader:
         gmt = time.gmtime(time.time())
         return str.format("{}:{}:{}",gmt.tm_hour,gmt.tm_min,gmt.tm_sec)            
             
-    # calculates a data frame where T1 = T1-T0
+    # takes a DataFrame 'data_frame' and calculates a DataFrame 'X' where
+    # X[n] = (data_frame[n]-data_frame[n-1])/data_frame[n-1]
     def as_deltas(self, data_frame):
         dt_index = data_frame.iloc[:-1].index
         int_index = pd.RangeIndex(stop = len(data_frame)-1)
         #recalculate data as fractional gain/loss
         A = data_frame.iloc[1:].set_index(int_index)
-        A_step = data_frame.iloc[:-1].set_index(int_index)
-        return A.sub(A_step,axis = 1).div(A).set_index(dt_index)
+        A_step_back = data_frame.iloc[:-1].set_index(int_index)
+        return A.sub(A_step_back,axis = 1).div(A_step_back).set_index(dt_index)
     
     def MSE(self, model, X_test, Y_test):
         Y_pred = model.predict(X_test)
@@ -348,6 +408,7 @@ class AutoTrader:
             symbols.append(line.strip())
         self.universe_file.close()
         return symbols
+
 
     def preprocess(self, data_frame, initial = False):
         data_frame = data_frame.interpolate(method = 'time')
