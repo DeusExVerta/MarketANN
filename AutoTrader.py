@@ -33,6 +33,7 @@ import logging
 
 #TODO: Fill in missing days(weekends, holidays) with interpolated results
 # should remove errors due to variable time differentials between observations.
+#TODO: Reframe data as deltas from open. could be less consistent but wont hit consistent sells.
 #TODO: Handle Connection loss by reconnection attempt.
 #TODO: Handle termination and restarting by checking for existence of NNfiles
 #TODO: Convert to Alpaca bars.df instead of bars_to_data_frame
@@ -145,6 +146,7 @@ class AutoTrader:
             tAMO = threading.Thread(target = self.await_market_open())
             tAMO.start()
             tAMO.join()
+            time.sleep(60*60*1)
             # Check if account is restricted from trading.
             if self.api.get_account().trading_blocked:
                print('Account is currently restricted from trading!')
@@ -161,7 +163,7 @@ class AutoTrader:
             logging.info('Getting Positions: t = ' + self.string_time())
             positions = self.api.list_positions()
             orders = self.api.list_orders('closed',after = today.strftime(self.api_time_format)[:-2]+':00')
-            #if we havent made any orders today.
+            #if we havent made any orders today. 
             #could cause issues with manual trading or other scripts/bots
             if len(orders)<=0:
                 for position in positions:
@@ -190,11 +192,8 @@ class AutoTrader:
             clock = self.api.get_clock()
             next_close = clock.next_close
             while pd.Timestamp.now(tz='EST')<(next_close-pd.Timedelta(15,'min')).tz_convert('EST'):
-                try:
-                    account = self.api.get_account()
-                except ConnectionError:
-                    time.sleep(3)
-                    account = self.api.get_account()
+                
+                account = self.api.get_account()
                 #set our maximum buy order value to 5% of our total equity
                 self.MaxOrderCost = float(account.equity) * 0.05
                 
@@ -332,29 +331,19 @@ class AutoTrader:
     # Checks the clock every minute while the market is not open.
     def await_market_open(self):
         clock = self.api.get_clock()
-        while(not clock.is_open):
-            try:
-                openingTime = clock.next_open.replace(tzinfo=datetime.timezone.utc).timestamp()
-                currTime = clock.timestamp.replace(tzinfo=datetime.timezone.utc).timestamp()
-                timeToOpen = int((openingTime - currTime) / 60)
-                print(str(timeToOpen) + " minutes til market open.")
-                time.sleep(60)
-                clock = self.api.get_clock()
-            except ConnectionError:
-                time.sleep(60)
-                clock = self.api.get_clock()
+        openingTime = clock.next_open.astimezone('EST')
+        while pd.Timestamp.now('EST')<=openingTime:
+            currTime = pd.Timestamp.now('EST')
+            timeToOpen = (openingTime - currTime) / 60
+            print(str(timeToOpen.round('min') + " til market open."))
+            time.sleep(60)
+            
         
     def await_midday(self):
         today = pd.Timestamp.today()
-        clock = self.api.get_clock()
         offset = pd.Timedelta(random.randint(-30,30),'m')
-        while (clock.timestamp.astimezone('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
-            try:
-                time.sleep(60)
-                clock = self.api.get_clock()
-            except ConnectionError:
-                self.api = tradeapi.REST()
-                clock = self.api.get_clock()
+        while (pd.Timestamp.now('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
+            time.sleep(60)
             
     #convert bars to a time indexed dataframe
     def bars_to_data_frame(self, bars):
