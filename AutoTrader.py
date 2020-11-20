@@ -34,8 +34,6 @@ import logging
 #TODO: Fill in missing days(weekends, holidays) with interpolated results
 # should remove errors due to variable time differentials between observations.
 #TODO: Reframe data as deltas from open. could be less consistent but wont hit consistent sells.
-#TODO: Handle Connection loss by reconnection attempt.
-#TODO: Handle termination and restarting by checking for existence of NNfiles
 #TODO: Convert to Alpaca bars.df instead of bars_to_data_frame
 class AutoTrader:
     def __init__(self):
@@ -43,15 +41,10 @@ class AutoTrader:
        gmt = time.gmtime(time.time())
        logging.basicConfig(filename=str.format('Info_{}_{}_{}.log',gmt.tm_mon,gmt.tm_mday,gmt.tm_year),level=logging.INFO)
        self.api = tradeapi.REST()
-       # API datetimes will match this format.
+       # API datetimes will match this format. 
        self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f%z'
        self.window_size = 100
        self.scaler = {}
-       
-       # self.random_forest_model = {}
-       # self.rf_score = {}
-       # self.linear_model = {}
-       # self.linear_score = {}
        self.n = 10
        
     
@@ -129,9 +122,7 @@ class AutoTrader:
             self.data_frame = self.preprocess(self.data_frame,True)
             
             dump(self.scaler,open('scaler.pkl','wb'))
-            # Train linear and random forest models for each symbol.
-            # for symbol in self.symbols:     
-            #     self.train_model(symbol)
+   
             Y = self.data_frame.loc[:,self.data_frame.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]    
             self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
                  	length=self.n, sampling_rate=1, batch_size=10)
@@ -261,34 +252,6 @@ class AutoTrader:
                     
         
 
-    def train_model(self, symbol,  linear = True, random_forest = True):
-        logging.info(str.format('training models for symbol:{}',symbol))
-        X = self.n_to_1_mapping(5, self.data_frame.loc[:,symbol+'_c':symbol+'_v'])
-        self.train_model_X(X,symbol, linear, random_forest)
-        
-        
-    def train_model_X(self, X, symbol, linear = True, random_forest = True):
-        Y = self.data_frame.iloc[self.n:].loc[:,symbol + '_h':symbol + '_l']
-        X_train, X_test, Y_train, Y_test = train_test_split(X,Y, test_size = 0.25)
-        
-        if linear:
-            print('-------------------------------------')
-            print('\nLinear Regression')
-            linreg = LinearRegression()
-            self.linear_model[symbol] = linreg.fit(X_train,Y_train)
-            print(str.format("R^2 model:{}",self.linear_model[symbol].score(X_train,Y_train)))            
-            self.linear_score[symbol] = self.linear_model[symbol].score(X_test,Y_test)
-            print(str.format("R^2 test:{}",self.linear_score[symbol]))
-            self.MSE(self.linear_model[symbol],X_test,Y_test)
-        if random_forest:    
-            print('-------------------------------------')
-            print('\nRandom Forest Regression')
-            rf = RandomForestRegressor()
-            self.random_forest_model[symbol] = rf.fit(X_train,Y_train)
-            print(str.format("R^2 model:{}",self.linear_model[symbol].score(X_train,Y_train)))
-            self.rf_score[symbol] = self.random_forest_model[symbol].score(X_test,Y_test)
-            print(str.format("R^2 test:{}",self.rf_score[symbol]))
-            self.MSE(self.random_forest_model[symbol],X_test,Y_test)
         
         
     #obtain OHLCV bar data for securities returns a DataFrame for the past 
@@ -335,7 +298,7 @@ class AutoTrader:
         while pd.Timestamp.now('EST')<=openingTime:
             currTime = pd.Timestamp.now('EST')
             timeToOpen = (openingTime - currTime) / 60
-            print(str(timeToOpen.round('min') + " til market open."))
+            print(str(timeToOpen.round('min')) + " til market open.")
             time.sleep(60)
             
         
@@ -374,13 +337,6 @@ class AutoTrader:
         A_step_back = data_frame.iloc[:-1].set_index(int_index)
         return A.sub(A_step_back,axis = 1).div(A_step_back).set_index(dt_index)
     
-    def MSE(self, model, X_test, Y_test):
-        Y_pred = model.predict(X_test)
-        Y_delta_square = np.square(np.subtract(Y_test, Y_pred))
-        mean_square_error = np.sum(Y_delta_square)/len(Y_pred)
-        print(str.format('MSE: {}', mean_square_error))
-        return mean_square_error
-  
     def train_neural_network(self, generator, epochs = 10):
         self.neural_network = Sequential()
         self.neural_network.add(LSTM(10,input_shape = (10,2530)))
