@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 import alpaca_trade_api as tradeapi
-import datetime
 import time
 import threading
 import warnings
-from pytz import timezone
 from collections import deque
 import random
 from pickle import dump,load
@@ -14,9 +12,6 @@ import numpy as np
 import tensorflow as tf
 
 from sklearn import preprocessing as spp
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 
 from os import path
@@ -38,20 +33,25 @@ import logging
 class AutoTrader:
     def __init__(self):
        warnings.filterwarnings("ignore")
-       gmt = time.gmtime(time.time())
-       logging.basicConfig(filename=str.format('Info_{}_{}_{}.log',gmt.tm_mon,gmt.tm_mday,gmt.tm_year),level=logging.INFO)
+       gmt = pd.Timestamp.now()
+       logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
        self.api = tradeapi.REST()
        # API datetimes will match this format. 
        self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f%z'
        self.window_size = 100
        self.scaler = {}
        self.n = 10
-       
-    
+     
+    class AccountRestrictedError(Exception):
+        """Exception Raised for accounts restricted from trading."""
+        def __init__(self, account, message):
+            self.message = message
+            self.account = account
+            
     def run(self):
-        print('Performing First Time Training')
-        logging.info('\n----------------------------------------\nPerforming First Time Training: t = ' + self.string_time())
-        logging.info('Canceling Orders: t = ' + self.string_time())
+        # print('Performing First Time Training')
+        logging.info(str.format('----------------------------------------\nPerforming First Time Training: t = {}',pd.Timestamp.now('EST').time()))
+        logging.info(str.format('Canceling Orders: t = {}',pd.Timestamp.now('EST').time()))
         self.api.cancel_all_orders()
         
         if not path.exists('Network'):
@@ -61,20 +61,20 @@ class AutoTrader:
             symbols = list()
             if not path.exists('universe'):
                 logging.info('No Universe File Found, Creating Universe:\n')
-                logging.info('Fetching Assets: t = '+ self.string_time())
+                logging.info(str.format('Fetching Assets: t = {}',pd.Timestamp.now('EST').time()))
                 assets = self.api.list_assets(status = 'active')
-                logging.info('Assets Fetched: t = ' + self.string_time())            
+                logging.info(str.format('Assets Fetched: t = {}',pd.Timestamp.now('EST').time()))            
                 for asset in assets:              
                     if asset.tradable == True:
                         symbols.append(asset.symbol)
                 #check last price to filter to only tradeable assets that fall within our price range
-                logging.info('Checking Asset Trade Range: t = ' + self.string_time())
+                logging.info(str.format('Checking Asset Trade Range: t = {}',pd.Timestamp.now('EST').time()))
                 self.data_frame = self.get_bar_frame(symbols)
-                logging.info('Data Fetched: t = ' + self.string_time())
+                logging.info(str.format('Data Fetched: t = {}', pd.Timestamp.now('EST').time()))
                 self.data_frame = self.data_frame.sort_index().iloc[-self.window_size:]
                 #drop the incomplete bar containing today's data
                 self.data_frame = self.data_frame.loc[pd.Timestamp.today(tz ='EST').floor('D')]
-                logging.info('Data Sorted: t = ' + self.string_time())
+                logging.info(str.format('Data Sorted: t = ',pd.Timestamp.now('EST').time()))
                 self.data_frame = self.data_frame.interpolate(method = 'time')
                 self.data_frame = self.data_frame.bfill()
     
@@ -101,21 +101,20 @@ class AutoTrader:
                     for suffix in suffixes:
                         if symbol+suffix in self.data_frame.columns:
                             self.data_frame.pop(symbol + suffix)
-                logging.info('Symbols removed: t = ' + self.string_time())
+                logging.info(str.format('Symbols removed: t = {}', pd.Timestamp.now('EST').time()))
     
-                self.universe_file = open('universe','w')
-                for symbol in symbols:
-                    self.universe_file.write(symbol+ '\n')
-                self.universe_file.close()
+                with open('universe','w') as universe_file:
+                    for symbol in symbols:
+                        universe_file.write(symbol+ '\n')
             else:
                 self.symbols = self.read_universe()
                 #convert bar entity data into raw numerical data
-                logging.info('Fetching Data For Training: t = ' + self.string_time())
+                logging.info(str.format('Fetching Data For Training: t = {}', pd.Timestamp.now('EST').time()))
                 self.data_frame = self.get_bar_frame(self.symbols)
     
-                logging.info('Training Data Fetched: t = ' + self.string_time())
+                logging.info(str.format('Training Data Fetched: t = {}', pd.Timestamp.now('EST').time()))
                 self.data_frame = self.data_frame.sort_index() #.iloc[-self.window_size:]
-                logging.info('Training Data Sorted: t =' + self.string_time())
+                logging.info(str.format('Training Data Sorted: t = {}', pd.Timestamp.now('EST').time()))
                 
             
             
@@ -137,21 +136,22 @@ class AutoTrader:
             tAMO = threading.Thread(target = self.await_market_open())
             tAMO.start()
             tAMO.join()
-            time.sleep(60*60*1)
+            
             # Check if account is restricted from trading.
-            if self.api.get_account().trading_blocked:
-               print('Account is currently restricted from trading!')
+            account = self.api.get_account()
+            if account.trading_blocked:
+               logging.error('account is currently restricted from trading.')
+               raise self.AccountRestrictedError(account,'account is currently restricted from trading.')
                #TODO:should break out here if account blocked no point in trying ot trade.
             
             today = pd.Timestamp.today(tz = 'EST').floor('D')
             #the following should execute only once the market is open
             
-            
             prices = self.get_bar_frame(symbols = self.symbols, window_size = 11).loc[:today]
             #process prediction data, dropping today's incomplete bar 
             pred = self.timeseries_prediction(prices)
             #get our current positions
-            logging.info('Getting Positions: t = ' + self.string_time())
+            logging.info(str.format('Getting Positions: t = {}', pd.Timestamp.now('EST').time()))
             positions = self.api.list_positions()
             orders = self.api.list_orders('closed',after = today.strftime(self.api_time_format)[:-2]+':00')
             #if we havent made any orders today. 
@@ -166,10 +166,11 @@ class AutoTrader:
                     low = prices.iloc[-1].loc[symbol+'_l']*(1+pred.loc[0, symbol + '_l'])
                     
                     if high<=low:
-                        print(str.format('Sym:{} high({})<=low({})', symbol,high,low))
+                        logging.error(str.format('Limit Sell Sym:{} [high(%.2f)<=low(%.2f)] limit_price %.2f', symbol,high,low,high))
                         self.api.submit_order(symbol,qty,'sell','limit','day',high)
                     else:
                         #3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
+                        logging.info(str.format('OCO Limit sell, Stop Loss {} limit_price %.2f stop_price %.2f',symbol,high,low))
                         self.api.submit_order(symbol = symbol, qty = qty, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
 
             #4. every minute while the market is open,from approximately midday until 15 minutes before 
@@ -183,16 +184,9 @@ class AutoTrader:
             clock = self.api.get_clock()
             next_close = clock.next_close
             while pd.Timestamp.now(tz='EST')<(next_close-pd.Timedelta(15,'min')).tz_convert('EST'):
-                
                 account = self.api.get_account()
-                #set our maximum buy order value to 5% of our total equity
                 self.MaxOrderCost = float(account.equity) * 0.05
-                
-                cash = float(account.cash) 
-                orders = self.api.list_orders()
-                for order in orders:
-                    if order.side == 'buy':
-                        cash = cash - (float(order.limit_price)*int(order.qty))
+                cash = self.get_available_cash()
                 if cash>=self.MaxOrderCost:
                     prices.append(self.get_bar_frame(self.symbols, window_size=1).loc[today])
                     pred = self.timeseries_prediction(prices)
@@ -201,16 +195,28 @@ class AutoTrader:
                         symbol = queue.pop()[:-2]
                         price = prices.loc[today].loc[symbol+'_c']
                         qty = (self.MaxOrderCost//price)
+                        logging.info(str.format('\tLimit Buy {} shares of {} limit price = %.2f \@ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
                         self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
                         #adjust cash for new open order
-                        cash  = cash-price*qty
+                        cash  = cash-(price*qty)
                         #remove data
                     prices = prices.loc[:today]
                 time.sleep(60)
             #5.	Cancel open orders 15 minutes* before market close.
+            logging.info('canceling all orders')
             self.api.cancel_all_orders()
-            
+            time.sleep(60*16)
 
+    def get_available_cash(self):
+        account = self.api.get_account()
+        #set our maximum buy order value to 5% of our total equity
+        cash = float(account.cash) 
+        orders = self.api.list_orders()
+        for order in orders:
+            if order.side == 'buy':
+                cash = cash - (float(order.limit_price)*int(order.qty))
+        return cash
+        
     def timeseries_prediction(self, data_frame):
         data = self.preprocess(data_frame)
         targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
@@ -221,7 +227,7 @@ class AutoTrader:
         return pred
     
     def scale_data(self, data_frame, scaler, initial = False):
-        logging.info('Scaling Data t = '+ self.string_time())
+        logging.info(str.format('Scaling Data t = {}', pd.Timestamp.now('EST').time()))
         for data in data_frame:
             if initial:
                 if not data.startswith('t_'):
@@ -239,21 +245,17 @@ class AutoTrader:
                         data_frame.loc[date,data] = scaled[index][0]
                         index+=1
         return data_frame
-        logging.info('Data Normalized: t = '+self.string_time())
+        logging.info(str.format('Data Normalized: t = ', pd.Timestamp.now('EST').time()))
     
     #takes an integer indexed data frame and returns that data frame unscaled
     def inverse_scaling(self,data_frame,scaler):
-        logging.info('Unscaling Data t = '+ self.string_time())
+        logging.info(str.format('Unscaling Data t = ', pd.Timestamp.now('EST').time()))
         for data in data_frame:
             if not data.startswith('t_'):
                 scaled = scaler[data].inverse_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
                 for i in range(len(scaled)):
                     data_frame.loc[i,data] = scaled[i][0]
                     
-        
-
-        
-        
     #obtain OHLCV bar data for securities returns a DataFrame for the past 
     #{window_size} {bar_length} indexed by symbol and day
     def get_bar_frame(self, symbols, algo_time = None, window_size = None, bar_length = 'day'):
@@ -269,12 +271,12 @@ class AutoTrader:
             # Convert the time to something compatable with the Alpaca API.
             formatted_time = algo_time.date().strftime(self.api_time_format[:-2]+':00')
         else:
-            formatted_time = self.api.get_clock().timestamp.to_pydatetime().astimezone(timezone('EST'))     
+            formatted_time = self.api.get_clock().timestamp.astimezone('EST')     
         delta = pd.Timedelta(window_size,'D')
-        logging.info('Getting Bars: t = ' + self.string_time())
+        logging.info(str.format('Getting Bars: t = {}', pd.Timestamp.now('EST').time()))
         while index < len(symbols):
             symbol_batch = symbols[index:index+batch_size]
-            logging.info(str.format('Getting Bars for indicies {}:{} t = {}',index,index+batch_size,self.string_time()))
+            logging.info(str.format('Getting Bars for indicies {}:{} t = {}',index,index+batch_size,pd.Timestamp.now('EST').time()))
             # Retrieve data for this batch of symbols
             bars = self.api.get_barset(
                 symbols=symbol_batch,
@@ -283,7 +285,7 @@ class AutoTrader:
                 end=formatted_time,
                 start=(formatted_time - delta)
                 )
-            logging.info('Bars Recieved: t = ' + self.string_time())
+            logging.info(str.format('Bars Recieved: t = {}', pd.Timestamp.now('EST').time()))
             index+=batch_size
             #start threads here
             data_frame = data_frame.join(self.bars_to_data_frame(bars),how='outer')
@@ -295,12 +297,15 @@ class AutoTrader:
     def await_market_open(self):
         clock = self.api.get_clock()
         openingTime = clock.next_open.astimezone('EST')
-        while pd.Timestamp.now('EST')<=openingTime:
-            currTime = pd.Timestamp.now('EST')
-            timeToOpen = (openingTime - currTime) / 60
-            print(str(timeToOpen.round('min')) + " til market open.")
-            time.sleep(60)
-            
+        closingTime = clock.next_close.astimezone('EST')
+        if openingTime<closingTime:
+            while (pd.Timestamp.now('EST')<=openingTime):
+                time.sleep(60)
+            logging.info(str.format('Market Opened: {} waiting 1 hour',pd.Timestamp.now('EST')))
+            time.sleep(60*60*1)
+        else:
+            logging.info(str.format('Await started during market hours {} next_open = {}, next_close = {}',pd.Timestamp.now('EST'),openingTime,closingTime))
+                
         
     def await_midday(self):
         today = pd.Timestamp.today()
@@ -323,10 +328,6 @@ class AutoTrader:
                 temp_data_frame.at[date,symbol + '_v'] = bars[symbol][index].v
         return temp_data_frame
 
-    def string_time(self):
-        gmt = time.gmtime(time.time())
-        return str.format("{}:{}:{}",gmt.tm_hour,gmt.tm_min,gmt.tm_sec)            
-            
     # takes a DataFrame 'data_frame' and calculates a DataFrame 'X' where
     # X[n] = (data_frame[n]-data_frame[n-1])/data_frame[n-1]
     def as_deltas(self, data_frame):
@@ -348,12 +349,10 @@ class AutoTrader:
     
     def read_universe(self):
         symbols = list()
-        self.universe_file = open('universe','r')
-        for line in self.universe_file:
-            symbols.append(line.strip())
-        self.universe_file.close()
+        with open('universe','r') as universe_file:
+            for line in universe_file:
+                symbols.append(line.strip())
         return symbols
-
 
     def preprocess(self, data_frame, initial = False):
         data_frame = data_frame.interpolate(method = 'time')
