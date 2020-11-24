@@ -38,7 +38,7 @@ class AutoTrader:
        self.api = tradeapi.REST()
        # API datetimes will match this format. 
        self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f%z'
-       self.window_size = 100
+       self.window_size = 1000
        self.scaler = {}
        self.n = 10
      
@@ -153,7 +153,7 @@ class AutoTrader:
             #get our current positions
             logging.info(str.format('Getting Positions: t = {}', pd.Timestamp.now('EST').time()))
             positions = self.api.list_positions()
-            orders = self.api.list_orders('closed',after = today.strftime(self.api_time_format)[:-2]+':00')
+            orders = self.api.list_orders('closed',after = today.isoformat())
             #if we havent made any orders today. 
             #could cause issues with manual trading or other scripts/bots
             if len(orders)<=0:
@@ -228,24 +228,13 @@ class AutoTrader:
     
     def scale_data(self, data_frame, scaler, initial = False):
         logging.info(str.format('Scaling Data t = {}', pd.Timestamp.now('EST').time()))
-        for data in data_frame:
-            if initial:
-                if not data.startswith('t_'):
-                    scaler[data] = spp.StandardScaler()
-                    scaled = scaler[data].fit_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
-                    index = 0
-                    for date in data_frame.index:
-                        data_frame.loc[date,data] = scaled[index][0]
-                        index+=1
-            else:
-                if not data.startswith('t_'):
-                    scaled = scaler[data].transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
-                    index = 0
-                    for date in data_frame.index:
-                        data_frame.loc[date,data] = scaled[index][0]
-                        index+=1
-        return data_frame
+        if initial:
+            scaler = data_frame.apply(lambda x: spp.StandardScaler(copy = False))
+            data_frame = data_frame.groupby(axis = 1, level=0).apply(lambda x : pd.DataFrame(scaler[(x.columns[0][0],x.columns[0][1])].fit_transform(x), columns=x.columns, index=x.index))
+        else:
+            data_frame = data_frame.groupby(axis = 1, level=0).apply(lambda x : pd.DataFrame(scaler[(x.columns[0][0],x.columns[0][1])].transform(x), columns=x.columns, index=x.index))
         logging.info(str.format('Data Normalized: t = ', pd.Timestamp.now('EST').time()))
+        return data_frame
     
     #takes an integer indexed data frame and returns that data frame unscaled
     def inverse_scaling(self,data_frame,scaler):
@@ -258,7 +247,7 @@ class AutoTrader:
                     
     #obtain OHLCV bar data for securities returns a DataFrame for the past 
     #{window_size} {bar_length} indexed by symbol and day
-    def get_bar_frame(self, symbols, algo_time = None, window_size = None, bar_length = 'day'):
+    def get_bar_frame(self, symbols, window_size = None, bar_length = 'day'):
         data_frame = pd.DataFrame()
         if window_size == None:
             window_size = self.window_size
@@ -266,12 +255,7 @@ class AutoTrader:
             raise ValueError('bar_length must be a string.')
         index = 0
         batch_size = 200
-        formatted_time = 0
-        if algo_time is not None:
-            # Convert the time to something compatable with the Alpaca API.
-            formatted_time = algo_time.date().strftime(self.api_time_format[:-2]+':00')
-        else:
-            formatted_time = self.api.get_clock().timestamp.astimezone('EST')     
+        formatted_time = self.api.get_clock().timestamp.astimezone('EST')     
         delta = pd.Timedelta(window_size,'D')
         logging.info(str.format('Getting Bars: t = {}', pd.Timestamp.now('EST').time()))
         while index < len(symbols):
@@ -282,13 +266,13 @@ class AutoTrader:
                 symbols=symbol_batch,
                 timeframe=bar_length,
                 limit= window_size,
-                end=formatted_time,
-                start=(formatted_time - delta)
+                end=formatted_time.isoformat(),
+                start=(formatted_time - delta).isoformat()
                 )
             logging.info(str.format('Bars Recieved: t = {}', pd.Timestamp.now('EST').time()))
             index+=batch_size
             #start threads here
-            data_frame = data_frame.join(self.bars_to_data_frame(bars),how='outer')
+            data_frame = data_frame.join(bars.df, how='outer', sort = True)
             #join threads here
         return data_frame
     
@@ -355,14 +339,18 @@ class AutoTrader:
         return symbols
 
     def preprocess(self, data_frame, initial = False):
-        data_frame = data_frame.interpolate(method = 'time')
-        data_frame = data_frame.bfill()
+        data_frame.columns = pd.MultiIndex.from_tuples(data_frame.columns)
+        data_frame.interpolate(method = 'time',inplace=True)
+        """You big dummy... this makes a bunch of deltas 0 
+            and drags our prediction toward no change
+        """
+        data_frame.bfill(inplace = True)
         data_frame = self.as_deltas(data_frame)
         #Convert weekday into One-Hot categories
         oneHotEncoder = OneHotEncoder(categories= 'auto')
         time_data_frame =pd.DataFrame(
                 oneHotEncoder.fit_transform(np.array(data_frame.index.weekday).reshape(-1,1)).toarray()).set_index(data_frame.index)
-        time_data_frame = time_data_frame.add_prefix('t_')
+        time_data_frame.columns = pd.MultiIndex.from_product([['DAY'],time_data_frame.columns])
         data_frame = time_data_frame.join(data_frame)
         #Scale data in columns
         data_frame = self.scale_data(data_frame,self.scaler,initial)

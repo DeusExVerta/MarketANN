@@ -4,9 +4,9 @@ Created on Thu Nov 19 13:33:43 2020
 
 @author: zeroa
 """
-import AutoTrader
+from AutoTrader import AutoTrader as trader
 
-at = AutoTrader()
+at = trader()
 at.run()
     
     
