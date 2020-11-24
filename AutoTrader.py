@@ -49,8 +49,8 @@ class AutoTrader:
     def run(self):
         # print('Performing First Time Training')
         logging.info(str.format('----------------------------------------\nPerforming First Time Training: t = {}',pd.Timestamp.now('EST').time()))
-        logging.info(str.format('Canceling Orders: t = {}',pd.Timestamp.now('EST').time()))
-        self.api.cancel_all_orders()
+        # logging.info(str.format('Canceling Orders: t = {}',pd.Timestamp.now('EST').time()))
+        # self.api.cancel_all_orders()
         
         if not path.exists('Network'):
             #if the universe file does not exist yet create a universe file
@@ -154,6 +154,8 @@ class AutoTrader:
             orders = self.api.list_orders('closed',after = today.isoformat())
             #if we havent made any orders today. 
             #could cause issues with manual trading or other scripts/bots
+            #TODO: Rewrite for constant evaluation of symbols
+            
             if len(orders)<=0:
                 for position in positions:
                     symbol = position.symbol
@@ -164,18 +166,19 @@ class AutoTrader:
                     low = prices.iloc[-1].loc[symbol+'_l']*(1+pred.loc[0, symbol + '_l'])
                     
                     if high<=low:
-                        logging.error(str.format('Limit Sell Sym:{} [high(%.2f)<=low(%.2f)] limit_price %.2f', symbol,high,low,high))
+                        logging.error(str.format('Limit Sell Sym:{} [high({})<=low({})] limit_price {}', symbol,high,low,high))
                         self.api.submit_order(symbol,qty,'sell','limit','day',high)
                     else:
                         #3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
-                        logging.info(str.format('OCO Limit sell, Stop Loss {} limit_price %.2f stop_price %.2f',symbol,high,low))
+                        logging.info(str.format('OCO Limit sell, Stop Loss {} limit_price {} stop_price {}',symbol,high,low))
                         self.api.submit_order(symbol = symbol, qty = qty, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
-
+            """
             #4. every minute while the market is open,from approximately midday until 15 minutes before 
             # market close, predict gains using today's data and create a queue
             # of symbols in order of predicted gains.
                 # if we have more than 5% of our equity as available cash, make a
             # limit order for the next symbol in the queue for <%5 of our equity. 
+           """
             tAMD = threading.Thread(target = self.await_midday())
             tAMD.start()
             tAMD.join()
@@ -188,16 +191,24 @@ class AutoTrader:
                 if cash>=self.MaxOrderCost:
                     prices.append(self.get_bar_frame(self.symbols, window_size=1).loc[today])
                     pred = self.timeseries_prediction(prices)
+
+                    order_symbols = [order.symbol for order in self.api.list_orders(status = 'all', after = today.isoformat()) if order.side == 'buy']
+                    position_symbols = [position.symbol for position in self.api.list_positions()]
+                    do_not_buy = list(set(order_symbols)|set(position_symbols))
                     queue = deque(pred.loc[:,pred.loc[0].index.map(lambda t: t.endswith('_h'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
                     while cash>=self.MaxOrderCost:
                         symbol = queue.pop()[:-2]
-                        price = prices.loc[today].loc[symbol+'_c']
-                        qty = (self.MaxOrderCost//price)
-                        logging.info(str.format('\tLimit Buy {} shares of {} limit price = %.2f \@ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
-                        self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
-                        #adjust cash for new open order
-                        cash  = cash-(price*qty)
-                        #remove data
+                        if not symbol in do_not_buy:
+                            price = prices.loc[today].loc[symbol+'_c']
+                            qty = (self.MaxOrderCost//price)
+                            logging.info(str.format('\tLimit Buy {} shares of {} limit price = {} \@ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
+                            self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
+                            #adjust cash for new open order
+                            cash  = cash-(price*qty)
+                        if symbol in position_symbols:
+                            for order_id in [order.id for order in self.api.list_orders('all',after = today.isoformat()) if order.symbol == symbol]:
+                                self.api.cancel_order(order_id)
+                    #remove data
                     prices = prices.loc[:today]
                 time.sleep(60)
             #5.	Cancel open orders 15 minutes* before market close.
@@ -266,7 +277,6 @@ class AutoTrader:
         batch_size = 200
         formatted_time = 0
         if algo_time is not None:
-            # Convert the time to something compatable with the Alpaca API.
             formatted_time = algo_time.isoformat()
         else:
             formatted_time = self.api.get_clock().timestamp.astimezone('EST')     
@@ -355,7 +365,11 @@ class AutoTrader:
         return symbols
 
     def preprocess(self, data_frame, initial = False):
-        #TODO: insert indicies for missing days. needs to include weekends at the start.
+        """ with a 12 day window, potential issues include:
+                holidays/3 day weekends where the weekend falls at the start
+                
+        
+        """
         add_df = pd.DataFrame(index = pd.date_range(start = min(data_frame.index),end = pd.Timestamp.today('America/New_York')).difference(data_frame.index), columns = data_frame.columns)
         data_frame = pd.concat([data_frame,add_df])
         

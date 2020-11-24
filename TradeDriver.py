@@ -13,5 +13,5 @@ if __name__ == "__main__":
         at.run()
     except AutoTrader.AutoTrader.AccountRestrictedError as are:
         ctypes.windll.user32.MessageBoxW(0,str.format("{},/n{}",are.message,are.account),"Account Restricted Error")
-    # except Exception as ex:
-    #     ctypes.windll.user32.MessageBoxW(0,str(ex.args),str(type(ex)))
+    except AutoTrader.tradeapi.ApiError as ex:
+        ctypes.windll.user32.MessageBoxW(0,ex.status_code,str(type(ex)))
