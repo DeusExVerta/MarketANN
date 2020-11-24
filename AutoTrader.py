@@ -36,8 +36,6 @@ class AutoTrader:
        gmt = pd.Timestamp.now()
        logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
        self.api = tradeapi.REST()
-       # API datetimes will match this format. 
-       self.api_time_format = '%Y-%m-%dT%H:%M:%S.%f%z'
        self.window_size = 100
        self.scaler = {}
        self.n = 10
@@ -153,7 +151,7 @@ class AutoTrader:
             #get our current positions
             logging.info(str.format('Getting Positions: t = {}', pd.Timestamp.now('EST').time()))
             positions = self.api.list_positions()
-            orders = self.api.list_orders('closed',after = today.strftime(self.api_time_format)[:-2]+':00')
+            orders = self.api.list_orders('closed',after = today.isoformat())
             #if we havent made any orders today. 
             #could cause issues with manual trading or other scripts/bots
             if len(orders)<=0:
@@ -269,7 +267,7 @@ class AutoTrader:
         formatted_time = 0
         if algo_time is not None:
             # Convert the time to something compatable with the Alpaca API.
-            formatted_time = algo_time.date().strftime(self.api_time_format[:-2]+':00')
+            formatted_time = algo_time.isoformat()
         else:
             formatted_time = self.api.get_clock().timestamp.astimezone('EST')     
         delta = pd.Timedelta(window_size,'D')
@@ -282,8 +280,8 @@ class AutoTrader:
                 symbols=symbol_batch,
                 timeframe=bar_length,
                 limit= window_size,
-                end=formatted_time,
-                start=(formatted_time - delta)
+                end=formatted_time.isoformat(),
+                start=(formatted_time - delta).isoformat()
                 )
             logging.info(str.format('Bars Recieved: t = {}', pd.Timestamp.now('EST').time()))
             index+=batch_size
@@ -338,9 +336,11 @@ class AutoTrader:
         A_step_back = data_frame.iloc[:-1].set_index(int_index)
         return A.sub(A_step_back,axis = 1).div(A_step_back).set_index(dt_index)
     
+    
     def train_neural_network(self, generator, epochs = 10):
         self.neural_network = Sequential()
-        self.neural_network.add(LSTM(10,input_shape = (10,2530)))
+        # input shape (timesteps, 5*Symbols + 7)
+        self.neural_network.add(LSTM(10,input_shape = (10,2532)))
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(1010, activation = 'relu'))
         self.neural_network.compile('adam',loss = 'mse', metrics = [MeanSquaredError(),RootMeanSquaredError()])
@@ -355,6 +355,10 @@ class AutoTrader:
         return symbols
 
     def preprocess(self, data_frame, initial = False):
+        #TODO: insert indicies for missing days. needs to include weekends at the start.
+        add_df = pd.DataFrame(index = pd.date_range(start = min(data_frame.index),end = pd.Timestamp.today('America/New_York')).difference(data_frame.index), columns = data_frame.columns)
+        data_frame = pd.concat([data_frame,add_df])
+        
         data_frame = data_frame.interpolate(method = 'time')
         data_frame = data_frame.bfill()
         data_frame = self.as_deltas(data_frame)
