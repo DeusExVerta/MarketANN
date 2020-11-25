@@ -365,11 +365,6 @@ class AutoTrader:
         return symbols
 
     def preprocess(self, data_frame, initial = False):
-        """ with a 12 day window, potential issues include:
-                holidays/3 day weekends where the weekend falls at the start
-                
-        
-        """
         add_df = pd.DataFrame(index = pd.date_range(start = min(data_frame.index),end = pd.Timestamp.today('America/New_York')).difference(data_frame.index), columns = data_frame.columns)
         data_frame = pd.concat([data_frame,add_df])
         
