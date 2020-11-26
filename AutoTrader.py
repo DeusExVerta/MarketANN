@@ -26,17 +26,16 @@ from keras.metrics import MeanSquaredError
 
 import logging
 
-#TODO: Fill in missing days(weekends, holidays) with interpolated results
-# should remove errors due to variable time differentials between observations.
+#TODO: Model Validation and empirical results tracking.
 #TODO: Reframe data as deltas from open. could be less consistent but wont hit consistent sells.
-#TODO: Convert to Alpaca bars.df instead of bars_to_data_frame
+#TODO: STRETCH Convert to Alpaca bars.df instead of bars_to_data_frame. this would be more efficient but it's a fundamental change to the structure of our data.
 class AutoTrader:
     def __init__(self):
        warnings.filterwarnings("ignore")
        gmt = pd.Timestamp.now()
        logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
        self.api = tradeapi.REST()
-       self.window_size = 100
+       self.window_size = 1000
        self.scaler = {}
        self.n = 10
      
@@ -71,34 +70,35 @@ class AutoTrader:
                 logging.info(str.format('Data Fetched: t = {}', pd.Timestamp.now('EST').time()))
                 self.data_frame = self.data_frame.sort_index().iloc[-self.window_size:]
                 #drop the incomplete bar containing today's data
-                self.data_frame = self.data_frame.loc[pd.Timestamp.today(tz ='EST').floor('D')]
+                self.data_frame = self.data_frame.loc[:pd.Timestamp.today(tz ='EST').floor('D')]
                 logging.info(str.format('Data Sorted: t = ',pd.Timestamp.now('EST').time()))
                 self.data_frame = self.data_frame.interpolate(method = 'time')
                 self.data_frame = self.data_frame.bfill()
-    
+                
+                #TODO: Fix for bars.df
                 pop_indx = []
-                suffixes = {'_o','_h','_l','_c','_v'}
-                # names = {'open','high','low','close','volume'}
+                suffixes = {'open','high','low','close','volume'}
+                #{'_o','_h','_l','_c','_v'}
                 for symbol in symbols:
                     #check if symbol has any data
                     for suffix in suffixes:
                         if not pop_indx.__contains__(symbol):
-                            if not symbol+suffix in self.data_frame.columns:
+                            if not (symbol,suffix) in self.data_frame.columns:
                                 pop_indx.append(symbol)
-                            elif not suffix.startswith('_v'):
-                                closes = self.data_frame.loc[:,symbol + suffix].fillna(0)
-                                if closes.isna().sum()>0:
+                            elif not suffix.startswith('v'):
+                                prices = self.data_frame.loc[:,(symbol,suffix)].fillna(0)
+                                if prices.isna().sum()>0:
                                     pop_indx.append(symbol)
-                                elif closes.gt(25).sum()>0:
+                                elif prices.gt(25).sum()>0:
                                     pop_indx.append(symbol)
-                                elif closes.lt(5).sum()>0:
+                                elif prices.lt(5).sum()>0:
                                     pop_indx.append(symbol)
                 logging.info('Symbols outside range identified: Count = ' + str(len(pop_indx)))
                 for symbol in pop_indx:
                     symbols.remove(symbol)
                     for suffix in suffixes:
-                        if symbol+suffix in self.data_frame.columns:
-                            self.data_frame.pop(symbol + suffix)
+                        if (symbol,suffix) in self.data_frame.columns:
+                            self.data_frame.pop((symbol,suffix))
                 logging.info(str.format('Symbols removed: t = {}', pd.Timestamp.now('EST').time()))
     
                 with open('universe','w') as universe_file:
@@ -111,16 +111,16 @@ class AutoTrader:
                 self.data_frame = self.get_bar_frame(self.symbols)
     
                 logging.info(str.format('Training Data Fetched: t = {}', pd.Timestamp.now('EST').time()))
-                self.data_frame = self.data_frame.sort_index() #.iloc[-self.window_size:]
+                self.data_frame = self.data_frame.sort_index()
                 logging.info(str.format('Training Data Sorted: t = {}', pd.Timestamp.now('EST').time()))
                 
             
             
-            self.data_frame = self.preprocess(self.data_frame,True)
+            self.data_frame = self.preprocess(self.data_frame,self.window_size,True)
             
             dump(self.scaler,open('scaler.pkl','wb'))
    
-            Y = self.data_frame.loc[:,self.data_frame.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]    
+            Y = self.data_frame.loc[:,self.data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]    
             self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
                  	length=self.n, sampling_rate=1, batch_size=10)
             self.train_neural_network(self.time_data_generator)
@@ -134,36 +134,33 @@ class AutoTrader:
             tAMO = threading.Thread(target = self.await_market_open())
             tAMO.start()
             tAMO.join()
-            
+            #the following should execute one hour after the market is open unless started during market hours
+
             # Check if account is restricted from trading.
             account = self.api.get_account()
             if account.trading_blocked:
                logging.error('account is currently restricted from trading.')
                raise self.AccountRestrictedError(account,'account is currently restricted from trading.')
-               #TODO:should break out here if account blocked no point in trying ot trade.
             
             today = pd.Timestamp.today(tz = 'EST').floor('D')
-            #the following should execute only once the market is open
             
             prices = self.get_bar_frame(symbols = self.symbols, window_size = 11).loc[:today]
             #process prediction data, dropping today's incomplete bar 
-            pred = self.timeseries_prediction(prices)
+            pred = self.timeseries_prediction(prices,11)
             #get our current positions
             logging.info(str.format('Getting Positions: t = {}', pd.Timestamp.now('EST').time()))
             positions = self.api.list_positions()
             orders = self.api.list_orders('closed',after = today.isoformat())
-            #if we havent made any orders today. 
-            #could cause issues with manual trading or other scripts/bots
-            #TODO: Rewrite for constant evaluation of symbols
-            
+            #if we havent made any orders today. place bracket sell orders on our positions.
+            #could cause issues with manual trading or other scripts/bots            
             if len(orders)<=0:
                 for position in positions:
                     symbol = position.symbol
                     qty = int(position.qty)
                     #multiply the last trading day's high&low by the fractional 
                     # predicted gains or losses to obtain expected high and low
-                    high = prices.iloc[-1].loc[symbol+'_h']*(1+pred.loc[0, symbol + '_h'])
-                    low = prices.iloc[-1].loc[symbol+'_l']*(1+pred.loc[0, symbol + '_l'])
+                    high = prices.iloc[-1].loc[(symbol,'high')]*(1+pred.loc[0, (symbol,'high')])
+                    low = prices.iloc[-1].loc[(symbol,'low')]*(1+pred.loc[0, (symbol,'low')])
                     
                     if high<=low:
                         logging.error(str.format('Limit Sell Sym:{} [high({})<=low({})] limit_price {}', symbol,high,low,high))
@@ -173,10 +170,10 @@ class AutoTrader:
                         logging.info(str.format('OCO Limit sell, Stop Loss {} limit_price {} stop_price {}',symbol,high,low))
                         self.api.submit_order(symbol = symbol, qty = qty, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
             """
-            #4. every minute while the market is open,from approximately midday until 15 minutes before 
+            #4. every minute while the market is open,from midday until 15 minutes before 
             # market close, predict gains using today's data and create a queue
             # of symbols in order of predicted gains.
-                # if we have more than 5% of our equity as available cash, make a
+            # if we have more than 5% of our equity as available cash, make a
             # limit order for the next symbol in the queue for <%5 of our equity. 
            """
             tAMD = threading.Thread(target = self.await_midday())
@@ -190,16 +187,16 @@ class AutoTrader:
                 cash = self.get_available_cash()
                 if cash>=self.MaxOrderCost:
                     prices.append(self.get_bar_frame(self.symbols, window_size=1).loc[today])
-                    pred = self.timeseries_prediction(prices)
+                    pred = self.timeseries_prediction(prices, 11)
 
                     order_symbols = [order.symbol for order in self.api.list_orders(status = 'all', after = today.isoformat()) if order.side == 'buy']
                     position_symbols = [position.symbol for position in self.api.list_positions()]
                     do_not_buy = list(set(order_symbols)|set(position_symbols))
-                    queue = deque(pred.loc[:,pred.loc[0].index.map(lambda t: t.endswith('_h'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
+                    queue = deque(pred.loc[:,pred.colunms.map(lambda t: t[1].startswith('high'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
                     while cash>=self.MaxOrderCost:
                         symbol = queue.pop()[:-2]
                         if not symbol in do_not_buy:
-                            price = prices.loc[today].loc[symbol+'_c']
+                            price = prices.loc[today].loc[(symbol,'close')]
                             qty = (self.MaxOrderCost//price)
                             logging.info(str.format('\tLimit Buy {} shares of {} limit price = {} \@ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
                             self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
@@ -226,9 +223,9 @@ class AutoTrader:
                 cash = cash - (float(order.limit_price)*int(order.qty))
         return cash
         
-    def timeseries_prediction(self, data_frame):
-        data = self.preprocess(data_frame)
-        targets = data.loc[:,data.iloc[0].index.map(lambda t: t.endswith('_h') or t.endswith('_l'))]
+    def timeseries_prediction(self, data_frame, window_size):
+        data = self.preprocess(data_frame, window_size)
+        targets = data.loc[:,data.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]
         tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
         pred = pd.DataFrame(self.neural_network.predict(tdg))
         pred.set_axis(targets.columns, axis = 'columns', inplace = True)
@@ -239,7 +236,7 @@ class AutoTrader:
         logging.info(str.format('Scaling Data t = {}', pd.Timestamp.now('EST').time()))
         for data in data_frame:
             if initial:
-                if not data.startswith('t_'):
+                if not data[0]=='day':
                     scaler[data] = spp.StandardScaler()
                     scaled = scaler[data].fit_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
                     index = 0
@@ -247,20 +244,20 @@ class AutoTrader:
                         data_frame.loc[date,data] = scaled[index][0]
                         index+=1
             else:
-                if not data.startswith('t_'):
+                if not data[0]=='day':
                     scaled = scaler[data].transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
                     index = 0
                     for date in data_frame.index:
                         data_frame.loc[date,data] = scaled[index][0]
                         index+=1
-        return data_frame
         logging.info(str.format('Data Normalized: t = ', pd.Timestamp.now('EST').time()))
+        return data_frame
     
     #takes an integer indexed data frame and returns that data frame unscaled
     def inverse_scaling(self,data_frame,scaler):
         logging.info(str.format('Unscaling Data t = ', pd.Timestamp.now('EST').time()))
         for data in data_frame:
-            if not data.startswith('t_'):
+            if not data[0]=='day':
                 scaled = scaler[data].inverse_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
                 for i in range(len(scaled)):
                     data_frame.loc[i,data] = scaled[i][0]
@@ -289,14 +286,18 @@ class AutoTrader:
             bars = self.api.get_barset(
                 symbols=symbol_batch,
                 timeframe=bar_length,
-                limit= window_size,
+                limit = window_size,
                 end=formatted_time.isoformat(),
                 start=(formatted_time - delta).isoformat()
                 )
             logging.info(str.format('Bars Recieved: t = {}', pd.Timestamp.now('EST').time()))
             index+=batch_size
             #start threads here
-            data_frame = data_frame.join(self.bars_to_data_frame(bars),how='outer')
+            # data_frame = data_frame.join(self.bars_to_data_frame(bars),how='outer')
+            
+            barsdf = bars.df
+            # barsdf.set_axis(barsdf.columns.to_flat_index(), axis = 'columns', inplace = True)
+            data_frame = data_frame.join(barsdf, how='outer')
             #join threads here
         return data_frame
     
@@ -339,6 +340,7 @@ class AutoTrader:
     # takes a DataFrame 'data_frame' and calculates a DataFrame 'X' where
     # X[n] = (data_frame[n]-data_frame[n-1])/data_frame[n-1]
     def as_deltas(self, data_frame):
+        data_frame = data_frame.sort_index()
         dt_index = data_frame.iloc[:-1].index
         int_index = pd.RangeIndex(stop = len(data_frame)-1)
         #recalculate data as fractional gain/loss
@@ -364,20 +366,27 @@ class AutoTrader:
                 symbols.append(line.strip())
         return symbols
 
-    def preprocess(self, data_frame, initial = False):
-        add_df = pd.DataFrame(index = pd.date_range(start = min(data_frame.index),end = pd.Timestamp.today('America/New_York')).difference(data_frame.index), columns = data_frame.columns)
-        data_frame = pd.concat([data_frame,add_df])
-        
-        data_frame = data_frame.interpolate(method = 'time')
-        data_frame = data_frame.bfill()
-        data_frame = self.as_deltas(data_frame)
+    def preprocess(self, data_frame, window_size, initial = False):
+        today = pd.Timestamp.today('America/New_York').floor('D')
+        add_df = pd.DataFrame(index = pd.date_range(start = today - pd.Timedelta(window_size,'D') ,end = today).difference(data_frame.index), columns = data_frame.columns)
+        df = pd.concat([data_frame,add_df])
+        df.sort_index(inplace = True)
+        df.replace([np.inf,-np.inf], method='bfill',inplace = True)
+        df.interpolate(method = 'time', inplace = True)
+        df.bfill(inplace = True)
+        df = self.as_deltas(df)
         #Convert weekday into One-Hot categories
         oneHotEncoder = OneHotEncoder(categories= 'auto')
-        time_data_frame =pd.DataFrame(
-                oneHotEncoder.fit_transform(np.array(data_frame.index.weekday).reshape(-1,1)).toarray()).set_index(data_frame.index)
-        time_data_frame = time_data_frame.add_prefix('t_')
-        data_frame = time_data_frame.join(data_frame)
+        time_data_frame = pd.DataFrame(
+            oneHotEncoder.fit_transform(
+                df.index.day_name().to_numpy().reshape(-1,1)).toarray(),
+                index = df.index) 
+        time_data_frame.columns = pd.MultiIndex.from_arrays(
+            [['day','day','day','day','day','day','day'],oneHotEncoder.get_feature_names()])
+        df = time_data_frame.join(df)
+        df.columns = pd.MultiIndex.from_tuples(df.columns)
         #Scale data in columns
-        data_frame = self.scale_data(data_frame,self.scaler,initial)
-        return data_frame
+        df.replace([np.inf,-np.inf], method='bfill',inplace = True)
+        df = self.scale_data(df,self.scaler,initial)
+        return df
     
