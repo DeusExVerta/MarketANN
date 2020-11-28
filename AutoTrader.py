@@ -192,11 +192,11 @@ class AutoTrader:
                     order_symbols = [order.symbol for order in self.api.list_orders(status = 'all', after = today.isoformat()) if order.side == 'buy']
                     position_symbols = [position.symbol for position in self.api.list_positions()]
                     do_not_buy = list(set(order_symbols)|set(position_symbols))
-                    queue = deque(pred.loc[:,pred.colunms.map(lambda t: t[1].startswith('high'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
+                    queue = deque(pred.loc[:,pred.columns.map(lambda t: t[1].startswith('high'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
                     while cash>=self.MaxOrderCost:
                         symbol = queue.pop()[:-2]
                         if not symbol in do_not_buy:
-                            price = prices.loc[today].loc[(symbol,'close')]
+                            price = prices.loc[today,[(symbol,'close')]]
                             qty = (self.MaxOrderCost//price)
                             logging.info(str.format('\tLimit Buy {} shares of {} limit price = {} \@ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
                             self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
