@@ -9,7 +9,6 @@ from pickle import dump,load
 
 import pandas as pd
 import numpy as np
-import tensorflow as tf
 
 from sklearn import preprocessing as spp
 from sklearn.preprocessing import OneHotEncoder
@@ -28,16 +27,17 @@ import logging
 
 #TODO: Model Validation and empirical results tracking.
 #TODO: Reframe data as deltas from open. could be less consistent but wont hit consistent sells.
-#TODO: STRETCH Convert to Alpaca bars.df instead of bars_to_data_frame. this would be more efficient but it's a fundamental change to the structure of our data.
 class AutoTrader:
     def __init__(self):
-       warnings.filterwarnings("ignore")
-       gmt = pd.Timestamp.now()
-       logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
-       self.api = tradeapi.REST()
-       self.window_size = 1000
-       self.scaler = {}
-       self.n = 10
+        warnings.filterwarnings("ignore")
+        gmt = pd.Timestamp.now()
+        logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
+        self.api = tradeapi.REST()
+        self.window_size = 1000
+        self.scaler = {}
+        self.n = 10
+        self.data_frame = pd.DataFrame()
+        self.symbols = list()
      
     class AccountRestrictedError(Exception):
         """Exception Raised for accounts restricted from trading."""
@@ -46,11 +46,12 @@ class AutoTrader:
             self.account = account
             
     def run(self):
-        # print('Performing First Time Training')
-        logging.info(str.format('----------------------------------------\nPerforming First Time Training: t = {}',pd.Timestamp.now('EST').time()))
-        # logging.info(str.format('Canceling Orders: t = {}',pd.Timestamp.now('EST').time()))
-        # self.api.cancel_all_orders()
-        
+        logging.info(
+            str.format(
+                """----------------------------------------\n
+                Performing First Time Training: t = {}""",
+                pd.Timestamp.now('EST').time()))
+       
         if not path.exists('Network'):
             #if the universe file does not exist yet create a universe file
             #containing a list of symbols trading between 5 and 25 USD.
@@ -64,7 +65,8 @@ class AutoTrader:
                 for asset in assets:              
                     if asset.tradable == True:
                         symbols.append(asset.symbol)
-                #check last price to filter to only tradeable assets that fall within our price range
+                #check last price to filter to only tradeable assets that fall
+                # within our price range
                 logging.info(str.format('Checking Asset Trade Range: t = {}',pd.Timestamp.now('EST').time()))
                 self.data_frame = self.get_bar_frame(symbols)
                 logging.info(str.format('Data Fetched: t = {}', pd.Timestamp.now('EST').time()))
@@ -93,7 +95,7 @@ class AutoTrader:
                                     pop_indx.append(symbol)
                                 elif prices.lt(5).sum()>0:
                                     pop_indx.append(symbol)
-                logging.info('Symbols outside range identified: Count = ' + str(len(pop_indx)))
+                logging.info(str.format('Symbols outside range identified: Count = {}',str(len(pop_indx))))
                 for symbol in pop_indx:
                     symbols.remove(symbol)
                     for suffix in suffixes:
@@ -121,9 +123,9 @@ class AutoTrader:
             dump(self.scaler,open('scaler.pkl','wb'))
    
             Y = self.data_frame.loc[:,self.data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]    
-            self.time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
+            time_data_generator = TimeseriesGenerator(self.data_frame.to_numpy(), Y.to_numpy(),
                  	length=self.n, sampling_rate=1, batch_size=10)
-            self.train_neural_network(self.time_data_generator)
+            self.train_neural_network(time_data_generator)
         else:
             self.neural_network = keras.models.load_model('Network')
             self.symbols = self.read_universe()
@@ -139,8 +141,8 @@ class AutoTrader:
             # Check if account is restricted from trading.
             account = self.api.get_account()
             if account.trading_blocked:
-               logging.error('account is currently restricted from trading.')
-               raise self.AccountRestrictedError(account,'account is currently restricted from trading.')
+                logging.error('account is currently restricted from trading.')
+                raise self.AccountRestrictedError(account,'account is currently restricted from trading.')
             
             today = pd.Timestamp.today(tz = 'EST').floor('D')
             
@@ -169,13 +171,13 @@ class AutoTrader:
                         #3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
                         logging.info(str.format('OCO Limit sell, Stop Loss {} limit_price {} stop_price {}',symbol,high,low))
                         self.api.submit_order(symbol = symbol, qty = qty, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
-            """
+            
             #4. every minute while the market is open,from midday until 15 minutes before 
             # market close, predict gains using today's data and create a queue
             # of symbols in order of predicted gains.
             # if we have more than 5% of our equity as available cash, make a
             # limit order for the next symbol in the queue for <%5 of our equity. 
-           """
+           
             tAMD = threading.Thread(target = self.await_midday())
             tAMD.start()
             tAMD.join()
@@ -183,9 +185,9 @@ class AutoTrader:
             next_close = clock.next_close
             while pd.Timestamp.now(tz='EST')<(next_close-pd.Timedelta(15,'min')).tz_convert('EST'):
                 account = self.api.get_account()
-                self.MaxOrderCost = float(account.equity) * 0.05
+                MaxOrderCost = float(account.equity) * 0.05
                 cash = self.get_available_cash()
-                if cash>=self.MaxOrderCost:
+                if cash>=MaxOrderCost:
                     prices.append(self.get_bar_frame(self.symbols, window_size=1).loc[today])
                     pred = self.timeseries_prediction(prices, 11)
 
@@ -193,13 +195,13 @@ class AutoTrader:
                     position_symbols = [position.symbol for position in self.api.list_positions()]
                     do_not_buy = list(set(order_symbols)|set(position_symbols))
                     queue = deque(pred.loc[:,pred.columns.map(lambda t: t[1].startswith('high'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
-                    while cash>=self.MaxOrderCost:
-                        symbol = queue.pop()[:-2]
+                    while cash>=MaxOrderCost:
+                        symbol = (queue.pop()[0])
                         if not symbol in do_not_buy:
-                            price = prices.loc[today,[(symbol,'close')]]
-                            qty = (self.MaxOrderCost//price)
-                            logging.info(str.format('\tLimit Buy {} shares of {} limit price = {} \@ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
-                            self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit',time_in_force = 'day',limit_price = price)
+                            price = prices.loc[today,[(symbol,'close')]][0]
+                            qty = (MaxOrderCost//price)
+                            logging.info(str.format('\tLimit Buy {} shares of {} limit price = {} @ {}',qty,symbol,price,pd.Timestamp.now('EST').time()))
+                            self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit', time_in_force = 'day',limit_price = price)
                             #adjust cash for new open order
                             cash  = cash-(price*qty)
                         if symbol in position_symbols:
@@ -292,11 +294,8 @@ class AutoTrader:
                 )
             logging.info(str.format('Bars Recieved: t = {}', pd.Timestamp.now('EST').time()))
             index+=batch_size
-            #start threads here
-            # data_frame = data_frame.join(self.bars_to_data_frame(bars),how='outer')
-            
+            #start threads here           
             barsdf = bars.df
-            # barsdf.set_axis(barsdf.columns.to_flat_index(), axis = 'columns', inplace = True)
             data_frame = data_frame.join(barsdf, how='outer')
             #join threads here
         return data_frame
@@ -351,12 +350,17 @@ class AutoTrader:
                 symbols.append(line.strip())
         return symbols
 
+    #TODO: Handle Symbols with no current data, e.g. merged, spun off, bankrupt 
     def preprocess(self, data_frame, window_size, initial = False):
         today = pd.Timestamp.today('America/New_York').floor('D')
-        add_df = pd.DataFrame(index = pd.date_range(start = today - pd.Timedelta(window_size,'D') ,end = today).difference(data_frame.index), columns = data_frame.columns)
+        add_df = pd.DataFrame(index = pd.date_range(start = today - pd.Timedelta(window_size,'D') ,end = today).difference(data_frame.index), columns = data_frame.columns, dtype = 'float64')
         df = pd.concat([data_frame,add_df])
         df.sort_index(inplace = True)
         df.replace([np.inf,-np.inf], method='bfill',inplace = True)
+    
+        bad_cols = [col for col in df.columns if df[col].isnull().all()]
+        df.loc[:,bad_cols] = 0
+        
         df.interpolate(method = 'time', inplace = True)
         df.bfill(inplace = True)
         df = self.as_deltas(df)
