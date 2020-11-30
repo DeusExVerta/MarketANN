@@ -135,7 +135,7 @@ class AutoTrader:
             tAMO.start()
             tAMO.join()
             #the following should execute one hour after the market is open unless started during market hours
-
+            
             # Check if account is restricted from trading.
             account = self.api.get_account()
             if account.trading_blocked:
@@ -321,21 +321,6 @@ class AutoTrader:
         offset = pd.Timedelta(random.randint(-30,30),'m')
         while (pd.Timestamp.now('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
             time.sleep(60)
-            
-    #convert bars to a time indexed dataframe
-    def bars_to_data_frame(self, bars):
-        temp_data_frame = pd.DataFrame()
-        for symbol in bars:
-            for index in range(0,len(bars[symbol])):
-                if not isinstance(bars[symbol][index],tradeapi.entity.Bar):
-                    raise ValueError(str.format('Object:{} at [{}][{}] not an instance of {}',bars[symbol][index],symbol,index,tradeapi.entity.Bar))
-                date = bars[symbol][index].t
-                temp_data_frame.at[date,symbol + '_c'] = bars[symbol][index].c
-                temp_data_frame.at[date,symbol + '_h'] = bars[symbol][index].h
-                temp_data_frame.at[date,symbol + '_l'] = bars[symbol][index].l
-                temp_data_frame.at[date,symbol + '_o'] = bars[symbol][index].o
-                temp_data_frame.at[date,symbol + '_v'] = bars[symbol][index].v
-        return temp_data_frame
 
     # takes a DataFrame 'data_frame' and calculates a DataFrame 'X' where
     # X[n] = (data_frame[n]-data_frame[n-1])/data_frame[n-1]
