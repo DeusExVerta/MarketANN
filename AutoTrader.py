@@ -366,19 +366,7 @@ class AutoTrader:
         today = pd.Timestamp.today()
         offset = pd.Timedelta(random.randint(-30,30),'m')
         while (pd.Timestamp.now('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
-            time.sleep(60)
-
-    # takes a DataFrame 'data_frame' and calculates a DataFrame 'X' where
-    # X[n] = (data_frame[n]-data_frame[n-1])/data_frame[n-1]
-    def as_deltas(self, data_frame):
-        data_frame = data_frame.sort_index()
-        dt_index = data_frame.iloc[:-1].index
-        int_index = pd.RangeIndex(stop = len(data_frame)-1)
-        #recalculate data as fractional gain/loss
-        A = data_frame.iloc[1:].set_index(int_index)
-        A_step_back = data_frame.iloc[:-1].set_index(int_index)
-        return A.sub(A_step_back,axis = 1).div(A_step_back).set_index(dt_index)
-    
+            time.sleep(60) 
     
     def train_neural_network(self, generator, epochs = 10):
         self.neural_network = Sequential()
@@ -413,7 +401,7 @@ class AutoTrader:
         
         df.interpolate(method = 'time', inplace = True)
         df.bfill(inplace = True)
-        df = self.as_deltas(df)
+        df = df.pct_change().iloc[1:]
         #Convert weekday into One-Hot categories
         oneHotEncoder = OneHotEncoder(categories= 'auto')
         time_data_frame = pd.DataFrame(
