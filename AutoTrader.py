@@ -156,7 +156,7 @@ class AutoTrader:
                                         oprice,
                                         pd.Timestamp.now('EST').time()))
                                     self.api.replace_order(order_id,qty,price)
-                                    cash = cash + (opric*oqty) - (price*qty)
+                                    cash = cash + (oprice*oqty) - (price*qty)
                     #remove data
                     prices = prices.loc[:today]
                 time.sleep(60)
