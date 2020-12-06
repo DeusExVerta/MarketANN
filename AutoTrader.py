@@ -122,6 +122,8 @@ class AutoTrader:
                     position_symbols = [position.symbol for position in self.api.list_positions()]
                     do_not_buy = list(set(order_symbols)|set(position_symbols))
                     queue = deque(pred.loc[:,pred.columns.map(lambda t: t[1].startswith('high'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
+                    #TODO: calculate expected gains from CURRENT PRICE!!!
+                    #TODO: ensure max change is POSITIVE!
                     while cash>=MaxOrderCost:
                         symbol = (queue.pop()[0])
                         if not symbol in do_not_buy:
@@ -132,12 +134,29 @@ class AutoTrader:
                                 qty,symbol,
                                 price,
                                 pd.Timestamp.now('EST').time()))
-                            self.api.submit_order(symbol=symbol,qty = qty,side = 'buy',type = 'limit', time_in_force = 'day',limit_price = price)
+                            self.api.submit_order(symbol,qty,'buy','limit','day',price)
                             #adjust cash for new open order
                             cash  = cash-(price*qty)
                         if symbol in position_symbols:
                             for order_id in [order.id for order in self.api.list_orders('all',after = today.isoformat()) if order.symbol == symbol]:
                                 self.api.cancel_order(order_id)
+                        if symbol in order_symbols:
+                            for order in self.api.list_orders('all',after = today.isoformat()):
+                                if order.symbol == symbol:
+                                    order_id = order.id
+                                    oprice = order.limit_price
+                                    oqty = order.qty
+                                    price = prices.loc[today,[(symbol,'close')]][0]
+                                    qty = (MaxOrderCost//price)
+                                    logging.info(str.format(
+                                        '\tUPDATE Limit Buy {} shares {},${} from {} shares {},${} @ {} ',
+                                        qty,symbol,
+                                        price,
+                                        oqty,symbol,
+                                        oprice,
+                                        pd.Timestamp.now('EST').time()))
+                                    self.api.replace_order(order_id,qty,price)
+                                    cash = cash + (opric*oqty) - (price*qty)
                     #remove data
                     prices = prices.loc[:today]
                 time.sleep(60)
@@ -323,7 +342,7 @@ class AutoTrader:
         batch_size = 200
         formatted_time = 0
         if algo_time is not None:
-            formatted_time = algo_time.isoformat()
+            formatted_time = algo_time
         else:
             formatted_time = self.api.get_clock().timestamp.astimezone('EST')     
         delta = pd.Timedelta(window_size,'D')
