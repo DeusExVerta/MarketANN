@@ -24,6 +24,7 @@ from keras.metrics import RootMeanSquaredError
 from keras.metrics import MeanSquaredError
 
 import logging
+from matplotlib import pyplot as plt
 
 #TODO: Model Validation and empirical results tracking.
 #TODO: Reframe data as deltas from open. could be less consistent but wont hit consistent sells.
@@ -34,7 +35,7 @@ class AutoTrader:
         logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
         self.api = tradeapi.REST()
         self.window_size = 1000
-        self.n = 10
+        self.seq_length = 10
         self.scaler = None
         self.get_universe()
  
@@ -61,9 +62,9 @@ class AutoTrader:
             
             today = pd.Timestamp.today(tz = 'EST').floor('D')
             
-            prices = self.get_bar_frame(self.symbols, window_size = 11).loc[:today]
+            prices = self.get_bar_frame(self.symbols, window_size = self.seq_length+1).loc[:today]
             #process prediction data, dropping today's incomplete bar 
-            pred = self.timeseries_prediction(prices,11)
+            pred = self.timeseries_prediction(prices,self.seq_length+1)
             #get our current positions
             logging.info(str.format(
                 'Getting Positions: t = {}',
@@ -79,8 +80,8 @@ class AutoTrader:
                     qty = int(position.qty)
                     #multiply the last trading day's high&low by the fractional 
                     # predicted gains or losses to obtain expected high and low
-                    high = (prices.iloc[-1].loc[[(symbol,'high')]]*(1+pred.loc[0, [(symbol,'high')]]))[0]
-                    low = (prices.iloc[-1].loc[[(symbol,'low')]]*(1+pred.loc[0, [(symbol,'low')]]))[0]
+                    high = (prices.iloc[-1].loc[[(symbol,'high')]]*(1+pred.loc[today, [(symbol,'high')]]))[0]
+                    low = (prices.iloc[-1].loc[[(symbol,'low')]]*(1+pred.loc[today, [(symbol,'low')]]))[0]
                     
                     if high<=low:
                         logging.error(str.format(
@@ -116,12 +117,13 @@ class AutoTrader:
                 cash = self.get_available_cash()
                 if cash>=MaxOrderCost:
                     prices.append(self.get_bar_frame(self.symbols, window_size=1).loc[today])
-                    pred = self.timeseries_prediction(prices, 11)
+                    pred = self.timeseries_prediction(prices, self.seq_length+1)
 
                     order_symbols = [order.symbol for order in self.api.list_orders(status = 'all', after = today.isoformat()) if order.side == 'buy']
                     position_symbols = [position.symbol for position in self.api.list_positions()]
                     do_not_buy = list(set(order_symbols)|set(position_symbols))
-                    queue = deque(pred.loc[:,pred.columns.map(lambda t: t[1].startswith('high'))].sort_values(by=0,axis=1).columns.to_numpy(copy = True))
+                    columns = pred.columns.map(lambda t: t[1].startswith('high'))
+                    queue = deque(pred.loc[:,columns].sort_values(by=today,axis=1).columns.to_numpy(copy = True))
                     #TODO: calculate expected gains from CURRENT PRICE!!!
                     #TODO: ensure max change is POSITIVE!
                     while cash>=MaxOrderCost:
@@ -141,11 +143,11 @@ class AutoTrader:
                             for order_id in [order.id for order in self.api.list_orders('all',after = today.isoformat()) if order.symbol == symbol]:
                                 self.api.cancel_order(order_id)
                         if symbol in order_symbols:
-                            for order in self.api.list_orders('all',after = today.isoformat()):
+                            for order in self.api.list_orders('open',after = today.isoformat()):
                                 if order.symbol == symbol:
                                     order_id = order.id
-                                    oprice = order.limit_price
-                                    oqty = order.qty
+                                    oprice = float(order.limit_price)
+                                    oqty = int(order.qty)
                                     price = prices.loc[today,[(symbol,'close')]][0]
                                     qty = (MaxOrderCost//price)
                                     logging.info(str.format(
@@ -155,8 +157,17 @@ class AutoTrader:
                                         oqty,symbol,
                                         oprice,
                                         pd.Timestamp.now('EST').time()))
-                                    self.api.replace_order(order_id,qty,price)
-                                    cash = cash + (oprice*oqty) - (price*qty)
+                                    try:
+                                        self.api.replace_order(order_id,qty,price)
+                                        cash = cash + (oprice*oqty) - (price*qty)
+                                    except tradeapi.rest.APIError as ex:
+                                        logging.error(
+                                            str.format("{} : {} @ {}, replacing ORD#:{}",
+                                                       ex.__class__.__name__,
+                                                       str(ex),
+                                                       pd.Timestamp.now('EST').time(),
+                                                       order_id
+                                                       ))
                     #remove data
                     prices = prices.loc[:today]
                 time.sleep(60)
@@ -258,22 +269,14 @@ class AutoTrader:
                 'Training Data Fetched: t = {}',
                 pd.Timestamp.now('EST').time())
                 )
-            data_frame = data_frame.sort_index()
+            
             logging.info(str.format(
                 'Training Data Sorted: t = {}',
                 pd.Timestamp.now('EST').time())
                 )
-            data_frame = self.preprocess(data_frame,self.window_size,True)            
-              
-            Y = data_frame.loc[:,data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]    
-            time_data_generator = TimeseriesGenerator(
-                data_frame.to_numpy(),
-                Y.to_numpy(),
-                length=self.n,
-                sampling_rate=1,
-                batch_size=10
-                )
-            self.train_neural_network(time_data_generator)
+                        
+            self.history = self.train_neural_network(data_frame)
+            self.plot_history(self.history)
             
     def get_available_cash(self):
         account = self.api.get_account()
@@ -286,13 +289,22 @@ class AutoTrader:
         return cash
         
     def timeseries_prediction(self, data_frame, window_size):
-        data = self.preprocess(data_frame, window_size)
-        targets = data.loc[:,data.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]
-        tdg = TimeseriesGenerator(data.to_numpy(),targets.to_numpy(),10,batch_size=10)
+        data_frame = self.preprocess(data_frame, window_size, algo_time=data_frame.index[-1])
+        tdg = self.create_generator(data_frame)
         pred = pd.DataFrame(self.neural_network.predict(tdg))
-        pred.set_axis(targets.columns, axis = 'columns', inplace = True)
+        pred.set_axis(data_frame.loc[:,data_frame.columns.map(lambda x: x[1].startswith('high')|x[1].startswith('low'))].columns, axis = 'columns', inplace = True)
         self.inverse_scaling(pred)
+        pred.set_axis(data_frame.iloc[self.seq_length:].index, axis = 'index', inplace = True)
         return pred
+    
+    def create_generator(self, data_frame):
+         targets = data_frame.loc[:,data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]
+         tdg = TimeseriesGenerator(
+             data_frame.to_numpy(),
+             targets.to_numpy(),
+             self.seq_length,
+             batch_size=10)
+         return tdg
     
     def scale_data(self, data_frame, initial = False):
         logging.info(str.format('Scaling Data t = {}', pd.Timestamp.now('EST').time()))
@@ -316,12 +328,12 @@ class AutoTrader:
                     for date in data_frame.index:
                         data_frame.loc[date,data] = scaled[index][0]
                         index+=1
-        logging.info(str.format('Data Normalized: t = ', pd.Timestamp.now('EST').time()))
+        logging.info(str.format('Data Normalized: t = {}', pd.Timestamp.now('EST').time()))
         return data_frame
     
     #takes an integer indexed data frame and returns that data frame unscaled
     def inverse_scaling(self,data_frame):
-        logging.info(str.format('Unscaling Data t = ', pd.Timestamp.now('EST').time()))
+        logging.info(str.format('Unscaling Data t = {}', pd.Timestamp.now('EST').time()))
         if self.scaler == None:
             self.scaler = load(open('scaler.pkl','rb'))
         for data in data_frame:
@@ -387,19 +399,30 @@ class AutoTrader:
         while (pd.Timestamp.now('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
             time.sleep(60) 
     
-    def train_neural_network(self, generator, epochs = 10):
+    def train_neural_network(self, data_frame, window_size = None, epochs = 10, save_model = True):
+        if window_size == None:
+            window_size = self.window_size
+        data_frame = self.preprocess(data_frame,window_size)
+        l = int(len(data_frame)*0.8)
+        train = data_frame.iloc[:l]
+        validation = data_frame.iloc[l-self.seq_length:]
+        train_generator = self.create_generator(train)
+        val_generator = self.create_generator(validation)
         self.neural_network = Sequential()
         # input shape (timesteps, 5*Symbols + 7)
-        self.neural_network.add(LSTM(10,input_shape = (10,2532)))
+        self.neural_network.add(LSTM(64,input_shape = (self.seq_length,2532)))
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(1010, activation = 'relu'))
-        self.neural_network.compile('adam',loss = 'mse', metrics = [MeanSquaredError(),RootMeanSquaredError()])
-        self.neural_network.fit(
-            generator,
-            steps_per_epoch=len(generator),
+        self.neural_network.compile('adam',loss = 'mae', metrics = [MeanSquaredError(),RootMeanSquaredError()])
+        history = self.neural_network.fit(
+            train_generator,
+            steps_per_epoch=len(train_generator),
             epochs = epochs,
+            validation_data = val_generator,
             use_multiprocessing=True)
-        self.neural_network.save('Network')
+        if save_model:
+            self.neural_network.save('Network')
+        return history
     
     def read_universe(self):
         symbols = list()
@@ -408,9 +431,10 @@ class AutoTrader:
                 symbols.append(line.strip())
         return symbols
 
-    def preprocess(self, data_frame, window_size, initial = False):
-        today = pd.Timestamp.today('America/New_York').floor('D')
-        add_df = pd.DataFrame(index = pd.date_range(start = today - pd.Timedelta(window_size,'D') ,end = today).difference(data_frame.index), columns = data_frame.columns, dtype = 'float64')
+    def preprocess(self, data_frame, window_size, initial = False, algo_time = None):
+        if algo_time == None:
+            algo_time = pd.Timestamp.today('America/New_York')
+        add_df = pd.DataFrame(index = pd.date_range(start = algo_time - pd.Timedelta(window_size,'D') ,end = algo_time).normalize().difference(data_frame.index), columns = data_frame.columns, dtype = 'float64')
         df = pd.concat([data_frame,add_df])
         df.sort_index(inplace = True)
         df.replace([np.inf,-np.inf], method='bfill',inplace = True)
@@ -436,3 +460,12 @@ class AutoTrader:
         df = self.scale_data(df,initial)
         return df
     
+    def plot_history(self, history):
+        plt.plot(history.history['loss'])
+        plt.plot(history.history['val_loss'])
+        plt.title(str.format('model loss (seq_length = {})',self.seq_length))
+        plt.ylabel('loss')
+        plt.xlabel('epoch')
+        plt.legend(['train', 'test'], loc='upper left')
+        plt.show()
+
