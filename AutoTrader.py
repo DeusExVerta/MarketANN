@@ -32,6 +32,7 @@ import logging
 #TODO: Convert to Alpaca bars.df instead of bars_to_data_frame
 class AutoTrader:
     def __init__(self):
+<<<<<<< Updated upstream
        warnings.filterwarnings("ignore")
        gmt = pd.Timestamp.now()
        logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
@@ -42,6 +43,17 @@ class AutoTrader:
        self.scaler = {}
        self.n = 10
      
+=======
+        warnings.filterwarnings("ignore")
+        gmt = pd.Timestamp.now()
+        logging.basicConfig(filename=str.format('Info_{}.log',str(gmt.date())),level=logging.INFO)
+        self.api = tradeapi.REST()
+        self.window_size = 7300
+        self.seq_length = 50
+        self.scaler = None
+        self.get_universe()
+ 
+>>>>>>> Stashed changes
     class AccountRestrictedError(Exception):
         """Exception Raised for accounts restricted from trading."""
         def __init__(self, account, message):
@@ -169,11 +181,26 @@ class AutoTrader:
                         logging.error(str.format('Limit Sell Sym:{} [high(%.2f)<=low(%.2f)] limit_price %.2f', symbol,high,low,high))
                         self.api.submit_order(symbol,qty,'sell','limit','day',high)
                     else:
+<<<<<<< Updated upstream
                         #3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
                         logging.info(str.format('OCO Limit sell, Stop Loss {} limit_price %.2f stop_price %.2f',symbol,high,low))
                         self.api.submit_order(symbol = symbol, qty = qty, side = 'sell', type = 'limit', time_in_force ='day', order_class = 'oco', take_profit = {"limit_price":high},stop_loss = {"stop_price":low})
 
             #4. every minute while the market is open,from approximately midday until 15 minutes before 
+=======
+                        # 3.	Place OCO orders 15 minutes* after market open on current positions based on estimated H/L.
+                        logging.info(str.format(
+                            'OCO Limit sell, Stop Loss {} limit_price {} stop_price {}',
+                            symbol,high,low))
+                        self.api.submit_order(symbol, qty,'sell', 'limit', 'day',
+                                              order_class = 'oco',
+                                              take_profit = {"limit_price":high},
+                                              stop_loss = {"stop_price":low}
+                                              )
+                    # logging.info('Limit Sell {} {}:Limit Price ${} @ {}', qty, symbol,high)
+                    # self.api.submit_order(symbol,qty,'sell','limit')
+            #4. every minute while the market is open,from midday until 15 minutes before 
+>>>>>>> Stashed changes
             # market close, predict gains using today's data and create a queue
             # of symbols in order of predicted gains.
                 # if we have more than 5% of our equity as available cash, make a
@@ -226,7 +253,20 @@ class AutoTrader:
         self.inverse_scaling(pred,self.scaler)
         return pred
     
+<<<<<<< Updated upstream
     def scale_data(self, data_frame, scaler, initial = False):
+=======
+    def create_generator(self, data_frame):
+         targets = data_frame.loc[:,data_frame.columns.map(lambda t: t[1].startswith('h')|t[1].startswith('l'))]
+         tdg = TimeseriesGenerator(
+             data_frame.to_numpy(),
+             targets.to_numpy(),
+             self.seq_length,
+             batch_size=10)
+         return tdg
+    
+    def scale_data(self, data_frame, initial = False):
+>>>>>>> Stashed changes
         logging.info(str.format('Scaling Data t = {}', pd.Timestamp.now('EST').time()))
         if initial:
             scaler = data_frame.apply(lambda x: spp.StandardScaler(copy = False))
@@ -262,6 +302,7 @@ class AutoTrader:
             symbol_batch = symbols[index:index+batch_size]
             logging.info(str.format('Getting Bars for indicies {}:{} t = {}',index,index+batch_size,pd.Timestamp.now('EST').time()))
             # Retrieve data for this batch of symbols
+<<<<<<< Updated upstream
             bars = self.api.get_barset(
                 symbols=symbol_batch,
                 timeframe=bar_length,
@@ -273,6 +314,26 @@ class AutoTrader:
             index+=batch_size
             #start threads here
             data_frame = data_frame.join(bars.df, how='outer', sort = True)
+=======
+            current = formatted_time
+            barsdf = pd.DataFrame()
+            while current > formatted_time-delta:
+                start = current - pd.Timedelta(1000,'D')
+                if start<=formatted_time-delta:
+                    start = formatted_time-delta
+                bars = self.api.get_barset(
+                    symbols=symbol_batch,
+                    timeframe=bar_length,
+                    end=current.isoformat(),
+                    start=start.isoformat()
+                    )
+                logging.info(str.format('Bars Recieved: t = {}', pd.Timestamp.now('EST').time()))
+                barsdf = barsdf.append(bars.df)
+                current = start
+            index+=batch_size
+            #start threads here           
+            data_frame = data_frame.join(barsdf, how='outer')
+>>>>>>> Stashed changes
             #join threads here
         return data_frame
     
@@ -322,6 +383,7 @@ class AutoTrader:
         A_step_back = data_frame.iloc[:-1].set_index(int_index)
         return A.sub(A_step_back,axis = 1).div(A_step_back).set_index(dt_index)
     
+<<<<<<< Updated upstream
     def train_neural_network(self, generator, epochs = 10):
         self.neural_network = Sequential()
         self.neural_network.add(LSTM(10,input_shape = (10,2530)))
@@ -330,6 +392,32 @@ class AutoTrader:
         self.neural_network.compile('adam',loss = 'mse', metrics = [MeanSquaredError(),RootMeanSquaredError()])
         self.neural_network.fit(generator, steps_per_epoch=len(generator), epochs = epochs, use_multiprocessing=True)
         self.neural_network.save('Network')
+=======
+    def train_neural_network(self, data_frame, window_size = None, epochs = 25, save_model = True):
+        if window_size == None:
+            window_size = self.window_size
+        data_frame = self.preprocess(data_frame,window_size)
+        l = int(len(data_frame)*0.8)
+        train = data_frame.iloc[:l]
+        validation = data_frame.iloc[l-self.seq_length:]
+        train_generator = self.create_generator(train)
+        val_generator = self.create_generator(validation)
+        self.neural_network = Sequential()
+        # input shape (timesteps, 5*Symbols + 7)
+        self.neural_network.add(LSTM(32,input_shape = (self.seq_length,2532)))
+        self.neural_network.add(Dense(10, activation = 'relu'))
+        self.neural_network.add(Dense(1010, activation = 'relu'))
+        self.neural_network.compile('adagrad',loss = 'cosine_similarity', metrics = [MeanSquaredError(),RootMeanSquaredError()])
+        history = self.neural_network.fit(
+            train_generator,
+            steps_per_epoch=len(train_generator),
+            epochs = epochs,
+            validation_data = val_generator,
+            use_multiprocessing=True)
+        if save_model:
+            self.neural_network.save('Network')
+        return history
+>>>>>>> Stashed changes
     
     def read_universe(self):
         symbols = list()
@@ -338,6 +426,7 @@ class AutoTrader:
                 symbols.append(line.strip())
         return symbols
 
+<<<<<<< Updated upstream
     def preprocess(self, data_frame, initial = False):
         data_frame.columns = pd.MultiIndex.from_tuples(data_frame.columns)
         data_frame.interpolate(method = 'time',inplace=True)
@@ -352,6 +441,29 @@ class AutoTrader:
                 oneHotEncoder.fit_transform(np.array(data_frame.index.weekday).reshape(-1,1)).toarray()).set_index(data_frame.index)
         time_data_frame.columns = pd.MultiIndex.from_product([['DAY'],time_data_frame.columns])
         data_frame = time_data_frame.join(data_frame)
+=======
+    def preprocess(self, data_frame, window_size, initial = False, algo_time = None):
+        if algo_time == None:
+            algo_time = pd.Timestamp.today('America/New_York')
+        add_df = pd.DataFrame(index = pd.date_range(start = algo_time - pd.Timedelta(window_size,'D') ,end = algo_time).normalize().difference(data_frame.index), columns = data_frame.columns, dtype = 'float64')
+        df = pd.concat([data_frame,add_df])
+        df.sort_index(inplace = True)
+        df.replace([np.inf,-np.inf], method='bfill',inplace = True)
+        
+        df.interpolate(method = 'linear', inplace = True)
+        df.bfill(inplace = True)
+        df = df.pct_change().iloc[1:]
+        #Convert weekday into One-Hot categories
+        oneHotEncoder = OneHotEncoder(categories= 'auto')
+        time_data_frame = pd.DataFrame(
+            oneHotEncoder.fit_transform(
+                np.array([idx.day_name() for idx in df.index]).reshape(-1,1)).toarray(),
+                index = df.index) 
+        time_data_frame.columns = pd.MultiIndex.from_arrays(
+            [['day','day','day','day','day','day','day'],oneHotEncoder.get_feature_names()])
+        df = time_data_frame.join(df)
+        df.columns = pd.MultiIndex.from_tuples(df.columns)
+>>>>>>> Stashed changes
         #Scale data in columns
         data_frame = self.scale_data(data_frame,self.scaler,initial)
         return data_frame
