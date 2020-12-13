@@ -405,7 +405,7 @@ class AutoTrader:
         data_frame = self.preprocess(data_frame,window_size)
         l = int(len(data_frame)*0.8)
         train = data_frame.iloc[:l]
-        validation = data_frame.iloc[l-self.seq_length:]
+        validation = data_frame.iloc[l:]
         train_generator = self.create_generator(train)
         val_generator = self.create_generator(validation)
         self.neural_network = Sequential()
@@ -413,7 +413,9 @@ class AutoTrader:
         self.neural_network.add(LSTM(64,input_shape = (self.seq_length,2532)))
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(1010, activation = 'relu'))
-        self.neural_network.compile('adam',loss = 'mae', metrics = [MeanSquaredError(),RootMeanSquaredError()])
+        self.neural_network.compile(
+            'adam', loss = 'cosine_similarity',
+            metrics = [MeanSquaredError(),RootMeanSquaredError()])
         history = self.neural_network.fit(
             train_generator,
             steps_per_epoch=len(train_generator),
