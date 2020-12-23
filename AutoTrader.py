@@ -25,10 +25,10 @@ from keras.metrics import MeanSquaredError
 
 import logging.config
 import logging
-from matplotlib import pyplot as plt
 
-#TODO: Model Validation and empirical results tracking.
-#TODO: Reframe data as deltas from open. could be less consistent but wont hit consistent sells.
+import configparser
+import os
+
 class AutoTrader:
     def __init__(self):
         warnings.filterwarnings("ignore")
@@ -44,7 +44,7 @@ class AutoTrader:
                     },
                 "handlers":
                     {
-                         "f":
+                         'f':
                              {
                                  "class" : "logging.handlers.TimedRotatingFileHandler",
                                  "formatter": 'default',
@@ -58,7 +58,14 @@ class AutoTrader:
                         "level":logging.NOTSET,
                         "handlers":"f"
                     }
-                })          
+                })
+        config = configparser.ConfigParser()
+        config.read('config.txt')
+        if config['APIKEYS']['API_Key_ID'] != '':
+            os.environ['APCA_API_KEY_ID'] = config['APIKEYS']['API_Key_ID']
+        if config['APIKEYS']['Secret_Key'] != '':
+            os.environ['APCA_API_SECRET_KEY'] = config['APIKEYS']['Secret_Key']
+        os.environ['APCA_API_BASE_URL'] = config['APIKEYS']['Endpoint']
         self.api = tradeapi.REST()
         self.window_size = 1000
         self.seq_length = 10
@@ -278,7 +285,7 @@ class AutoTrader:
             logging.info('Training Data Fetched')
                         
             self.history = self.train_neural_network(data_frame)
-            self.plot_history(self.history)
+            
             
     def get_available_cash(self):
         account = self.api.get_account()
@@ -462,12 +469,5 @@ class AutoTrader:
         df = self.scale_data(df,initial)
         return df
     
-    def plot_history(self, history):
-        plt.plot(history.history['loss'])
-        plt.plot(history.history['val_loss'])
-        plt.title(str.format('model loss (seq_length = {})',self.seq_length))
-        plt.ylabel('loss')
-        plt.xlabel('epoch')
-        plt.legend(['train', 'test'], loc='upper left')
-        plt.show()
+
 
