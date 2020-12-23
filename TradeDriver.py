@@ -18,5 +18,5 @@ if __name__ == "__main__":
     except Exception as ex:
         ctypes.windll.user32.MessageBoxW(0,str(ex),str(ex.__class__.__name__))
     finally:
-        ctypes.windll.user32.MessageBoxW(0,"please check your internet connection and account information and try again.","Application Terminated")
+        ctypes.windll.user32.MessageBoxW(0,"Please check your internet connection and account information and try running the script again.","Application Terminated")
         
