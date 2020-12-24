@@ -1,8 +1,17 @@
 Automatic Stock Trading Bot README:
 This is a proof of concept project which uses an artificial neural network to perform trades on
-Alpaca https://alpaca.markets/ 
-This project was developed for and tested on alpaca's paper trading only.
+Alpaca. https://alpaca.markets/ the application follows an overnight hold trade strategy; selling in the morning 
+and placing orders to buy those stocks with the highest estimated gains from today to tommorow during the afternoon.
+This project was developed for and tested on alpaca's paper trading environment only.
 
+Project Manifest:
+	-Network
+	-AutoTrader.py
+	-config.txt
+	-README.txt
+	-scaler.pkl
+	-TradeDriver.py
+	-universe
 
 Installation instructions:
 	To install this application place all files contained in this directory into the following directory:

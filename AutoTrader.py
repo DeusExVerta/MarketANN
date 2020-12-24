@@ -278,12 +278,9 @@ class AutoTrader:
             self.neural_network = keras.models.load_model('Network')
         else:
             logging.info('Performing First Time Training')
-            #convert bar entity data into raw numerical data
             logging.info('Fetching Data For Training')
             data_frame = self.get_bar_frame(self.symbols)
-
             logging.info('Training Data Fetched')
-                        
             self.history = self.train_neural_network(data_frame)
             
             
