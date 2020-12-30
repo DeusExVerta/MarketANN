@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Nov 19 13:33:43 2020
+This project contains software developed by the Apache software foundation and
+Alpaca, this software is used in accordance with the Apache License 2.0 
 
-@author: zeroa
+This project is an automated stock trading bot that operates on Alpaca
+
+@author: Gary J Howard
 """
+#this file is a driver for AutoTrader 
+
+#redirect stdout and stderr so the script can run as pythonw
+#this is neccessary due to a bug with pythonw
 import sys
 with open('stdout.txt', 'w') as stdoutfile:
     sys.stdout = stdoutfile

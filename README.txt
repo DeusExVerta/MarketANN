@@ -3,26 +3,30 @@ This is a proof of concept project which uses an artificial neural network to pe
 Alpaca. https://alpaca.markets/ the application follows an overnight hold trade strategy; selling in the morning 
 and placing orders to buy those stocks with the highest estimated gains from today to tommorow during the afternoon.
 This project was developed for and tested on alpaca's paper trading environment only.
+This project contains software developed at the Apache Software Foundation, and software developed by Alpaca 
+which has been used in accordance with the Apache License 2.0 available at http://www.apache.org/licenses/LICENSE-2.0.txt
 
 Project Manifest:
+	-.pylint.d
 	-Network
 	-AutoTrader.py
 	-config.txt
+	-LICENSE.txt
 	-README.txt
 	-scaler.pkl
 	-TradeDriver.py
 	-universe
 
 Installation instructions:
-	To install this application place all files contained in this directory into the following directory:
+	To install this application place all files listed in the project manifest into the following directory:
 
 		C:\Program Files\TradeBot\
 
 	This application requires the following in order to run:
 		A Python interpreter must be installed. 
 			You can download the latest version of python here: https://www.python.org/downloads/
-		You must have an Alpaca Paper Trading Account, and the associated keys in order to make use of this application.
-			sign up for an account by following this link: https://app.alpaca.markets/signup
+		 an Alpaca Paper Trading Account, and the associated keys
+			you can sign up for an account by following this link: https://app.alpaca.markets/signup
 			enter your email address and choose a password for your alpaca account
 			you will be redirected to a page which asks for a verification code.
 			check your email for a verification email from Alpaca and enter that code on the verification page, then click verify.

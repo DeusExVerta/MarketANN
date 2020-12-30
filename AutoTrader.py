@@ -27,11 +27,12 @@ import logging.config
 import logging
 
 import configparser
-import os
+import os, errno
 
 class AutoTrader:
     def __init__(self):
         warnings.filterwarnings("ignore")
+        #setup logging configuration to log all messages.
         logging.config.dictConfig(
             {
                 "version": 1,
@@ -59,6 +60,8 @@ class AutoTrader:
                         "handlers":"f"
                     }
                 })
+        #parse the config file and get the users keys setting them as
+        #environment variables for this process and all children.
         config = configparser.ConfigParser()
         config.read('config.txt')
         if config['APIKEYS']['API_Key_ID'] != '':
@@ -66,10 +69,12 @@ class AutoTrader:
         if config['APIKEYS']['Secret_Key'] != '':
             os.environ['APCA_API_SECRET_KEY'] = config['APIKEYS']['Secret_Key']
         os.environ['APCA_API_BASE_URL'] = config['APIKEYS']['Endpoint']
+        #connect to Alpaca and their API
         self.api = tradeapi.REST()
         self.window_size = 1000
         self.seq_length = 10
         self.scaler = None
+        #check if the universe file exists
         self.get_universe()
  
     class AccountRestrictedError(Exception):
@@ -214,15 +219,17 @@ class AutoTrader:
             time.sleep(60*16)
 
     def get_universe(self):
-        #if the universe file does not exist yet create a universe file
-        # containing a list of symbols trading between 5 and 25 USD over
-        # the last 10 trading days.
+        #if the universe file does not exist raise FileNotFoundError
         symbols = list()
         if path.exists('universe'):
             self.symbols = self.read_universe()
             self.get_network()
         else:
-            logging.info('No Universe File Found, Creating Universe')
+            logging.error('No Universe File Found!')
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), 'universe')
+            # yet create a universe file
+            # containing a list of symbols trading between 5 and 25 USD over
+            # the last 10 trading days.
             logging.info('Fetching Assets')
             assets = self.api.list_assets(status = 'active')
             logging.info('Assets Fetched')   
@@ -274,7 +281,9 @@ class AutoTrader:
             self.get_network(True)
             
     def get_network(self,retrain = False):
+        #create and train or load ANN from file
         if path.exists('Network') and not retrain:
+            self.get_scaler()
             self.neural_network = keras.models.load_model('Network')
         else:
             logging.info('Performing First Time Training')
@@ -282,11 +291,16 @@ class AutoTrader:
             data_frame = self.get_bar_frame(self.symbols)
             logging.info('Training Data Fetched')
             self.history = self.train_neural_network(data_frame)
-            
-            
+
+    def get_scaler(self)
+        #check to ensure scaler file exists
+        if !path.exists('scaler.pkl')
+            logging.error('scaler file not found!')
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), 'scaler.pkl')
+     
     def get_available_cash(self):
+        #gets and returns the value of liquid cash less pending orders cost
         account = self.api.get_account()
-        #set our maximum buy order value to 5% of our total equity
         cash = float(account.cash) 
         orders = self.api.list_orders()
         for order in orders:
@@ -295,15 +309,18 @@ class AutoTrader:
         return cash
         
     def timeseries_prediction(self, data_frame, window_size):
+        #takes a data frame and expected length/window size and returns a 
+        #data frame containing the predicted change in high and low prices
         data_frame = self.preprocess(data_frame, window_size, algo_time=data_frame.index[-1])
         tdg = self.create_generator(data_frame)
         pred = pd.DataFrame(self.neural_network.predict(tdg))
         pred.set_axis(data_frame.loc[:,data_frame.columns.map(lambda x: x[1].startswith('high')|x[1].startswith('low'))].columns, axis = 'columns', inplace = True)
-        self.inverse_scaling(pred)
+        pred = self.inverse_scaling(pred)
         pred.set_axis(data_frame.iloc[self.seq_length:].index, axis = 'index', inplace = True)
         return pred
     
     def create_generator(self, data_frame):
+        #create sequences of 10 days woth of data using keras Timeseries Generator
          targets = data_frame.loc[:,data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]
          tdg = TimeseriesGenerator(
              data_frame.to_numpy(),
@@ -313,6 +330,8 @@ class AutoTrader:
          return tdg
     
     def scale_data(self, data_frame, initial = False):
+        #takes a data frame and scales each collumn independently
+        #saves the initial scaler so future data can be scaled on the same scale
         logging.info('Scaling Data')
         for data in data_frame:
             if initial:
@@ -337,8 +356,9 @@ class AutoTrader:
         logging.info('Data Normalized')
         return data_frame
     
-    #takes an integer indexed data frame and returns that data frame unscaled
+    #takes a scaled data frame and returns that data frame unscaled 
     def inverse_scaling(self,data_frame):
+        df = pd.DataFrame()
         logging.info('Unscaling Data')
         if self.scaler == None:
             self.scaler = load(open('scaler.pkl','rb'))
@@ -346,10 +366,12 @@ class AutoTrader:
             if not data[0]=='day':
                 scaled = self.scaler[data].inverse_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
                 for i in range(len(scaled)):
-                    data_frame.loc[i,data] = scaled[i][0]
+                    df.loc[i,data] = scaled[i][0]
+        return df
                     
     #obtain OHLCV bar data for securities returns a DataFrame for the past 
-    #{window_size} {bar_length} indexed by symbol and day
+    #{window_size} {bar_length} indexed by symbol, type and day
+    # performs data aquisition in batches of 200 symbols at a time
     def get_bar_frame(self, symbols, algo_time = None, window_size = None, bar_length = 'day'):
         data_frame = pd.DataFrame()
         if window_size == None:
@@ -385,7 +407,7 @@ class AutoTrader:
         return data_frame
     
     # Wait for market to open.
-    # Checks the clock every minute while the market is not open.
+    # Checks the time every minute while the market is not open.
     def await_market_open(self):
         clock = self.api.get_clock()
         openingTime = clock.next_open.astimezone('EST')
@@ -397,12 +419,15 @@ class AutoTrader:
         else:
             logging.info(str.format('Await started during market hours next_open = {}, next_close = {}',openingTime,closingTime))
                 
-        
+    
+    #waits for midday +-30 minutes checking the time every minute.
     def await_midday(self):
         today = pd.Timestamp.today()
         offset = pd.Timedelta(random.randint(-30,30),'m')
         while (pd.Timestamp.now('EST')<=(pd.Timestamp(today.year,today.month,today.day,12).tz_localize('EST')+offset)):
-            time.sleep(60) 
+            time.sleep(60)
+            
+    #create and train the neural network initially with an 80/20 training/validation split.
     # input shape (timesteps, 5*Symbols + 7)
     def train_neural_network(self, data_frame, window_size = None, epochs = 10, save_model = True):
         if window_size == None:
@@ -418,7 +443,7 @@ class AutoTrader:
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(1010, activation = 'relu'))
         self.neural_network.compile(
-            'adam', loss = 'cosine_similarity',
+            'adam', loss = 'MSLE',
             metrics = [MeanSquaredError(),RootMeanSquaredError()])
         history = self.neural_network.fit(
             train_generator,
@@ -430,6 +455,7 @@ class AutoTrader:
             self.neural_network.save('Network')
         return history
     
+    #read the symbols from the universe file
     def read_universe(self):
         symbols = list()
         with open('universe','r') as universe_file:
@@ -437,6 +463,13 @@ class AutoTrader:
                 symbols.append(line.strip())
         return symbols
 
+    #takes a data frame and runs it through a preprocessing regimen:
+        # adding missing days
+        # replacing infinite values and empty columns with 0
+        # interpolating across missing days
+        # backfilling missing values at the start of the data frame
+        # recalculating as a percentage change.
+        # adding a day of the week signal by one hot encoding.
     def preprocess(self, data_frame, window_size, initial = False, algo_time = None):
         if algo_time == None:
             algo_time = pd.Timestamp.today('America/New_York')
@@ -461,10 +494,9 @@ class AutoTrader:
             [['day','day','day','day','day','day','day'],oneHotEncoder.get_feature_names()])
         df = time_data_frame.join(df)
         df.columns = pd.MultiIndex.from_tuples(df.columns)
+
         #Scale data in columns
-        df.replace([np.inf,-np.inf], method='bfill',inplace = True)
         df = self.scale_data(df,initial)
         return df
     
-
 
