@@ -1,4 +1,4 @@
 [APIKEYS]
-API_Key_ID: PK6KDLOF7WHTMWAFK1Z7
-Secret_Key: VFwQf2XpECbSRl7r3bp7o648jINGEXLHlC2OxfUS
+API_Key_ID: 
+Secret_Key: 
 Endpoint: https://paper-api.alpaca.markets
