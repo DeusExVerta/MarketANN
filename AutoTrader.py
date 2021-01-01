@@ -227,58 +227,7 @@ class AutoTrader:
         else:
             logging.error('No Universe File Found!')
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), 'universe')
-            # yet create a universe file
-            # containing a list of symbols trading between 5 and 25 USD over
-            # the last 10 trading days.
-            logging.info('Fetching Assets')
-            assets = self.api.list_assets(status = 'active')
-            logging.info('Assets Fetched')   
-            for asset in assets:              
-                if asset.tradable == True:
-                    symbols.append(asset.symbol)
-            #check last price to filter to only tradeable assets that fall
-            # within our price range
-            logging.info('Checking Asset Trade Range')
-            data_frame = self.get_bar_frame(symbols,10)
-            logging.info('Data Fetched')
-            data_frame = data_frame.sort_index().iloc[-self.window_size:]
-            #drop the incomplete bar containing today's data
-            data_frame = data_frame.loc[:pd.Timestamp.today(tz ='EST').floor('D')]
-            logging.info('Data Sorted')
-            data_frame = data_frame.interpolate(method = 'time')
-            data_frame = data_frame.bfill()
             
-            pop_indx = []
-            suffixes = {'open','high','low','close','volume'}
-            for symbol in symbols:
-                #check if symbol has any data
-                for suffix in suffixes:
-                    if not pop_indx.__contains__(symbol):
-                        if not (symbol,suffix) in data_frame.columns:
-                            pop_indx.append(symbol)
-                        elif not suffix.startswith('v'):
-                            prices = data_frame.loc[:,[(symbol,suffix)]].fillna(0)
-                            if prices.isna().sum()>0:
-                                pop_indx.append(symbol)
-                            elif prices.gt(25).sum()>0:
-                                pop_indx.append(symbol)
-                            elif prices.lt(5).sum()>0:
-                                pop_indx.append(symbol)
-            logging.info(str.format(
-                'Symbols outside range identified: Count = {}',
-                str(len(pop_indx))))
-            for symbol in pop_indx:
-                symbols.remove(symbol)
-                for suffix in suffixes:
-                    if (symbol,suffix) in data_frame.columns:
-                        data_frame.pop((symbol,suffix))
-            logging.info('Symbols removed')
-
-            with open('universe','w') as universe_file:
-                for symbol in symbols:
-                    universe_file.write(symbol+ '\n')
-            self.symbols = symbols
-            self.get_network(True)
             
     def get_network(self,retrain = False):
         #create and train or load ANN from file
@@ -439,9 +388,9 @@ class AutoTrader:
         train_generator = self.create_generator(train)
         val_generator = self.create_generator(validation)
         self.neural_network = Sequential()
-        self.neural_network.add(LSTM(64,input_shape = (self.seq_length,2532)))
+        self.neural_network.add(LSTM(64,input_shape = (self.seq_length,(len(self.symbols)*5+7)))
         self.neural_network.add(Dense(10, activation = 'relu'))
-        self.neural_network.add(Dense(1010, activation = 'relu'))
+        self.neural_network.add(Dense(len(self.symbols)*2, activation = 'relu'))
         self.neural_network.compile(
             'adam', loss = 'MSLE',
             metrics = [MeanSquaredError(),RootMeanSquaredError()])
