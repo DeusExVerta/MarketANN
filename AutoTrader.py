@@ -241,9 +241,9 @@ class AutoTrader:
             logging.info('Training Data Fetched')
             self.history = self.train_neural_network(data_frame)
 
-    def get_scaler(self)
+    def get_scaler(self):
         #check to ensure scaler file exists
-        if !path.exists('scaler.pkl')
+        if not path.exists('scaler.pkl'):
             logging.error('scaler file not found!')
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), 'scaler.pkl')
      
@@ -388,7 +388,7 @@ class AutoTrader:
         train_generator = self.create_generator(train)
         val_generator = self.create_generator(validation)
         self.neural_network = Sequential()
-        self.neural_network.add(LSTM(64,input_shape = (self.seq_length,(len(self.symbols)*5+7)))
+        self.neural_network.add(LSTM(64,input_shape = (self.seq_length,(len(self.symbols)*5+7))))
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(len(self.symbols)*2, activation = 'relu'))
         self.neural_network.compile(
