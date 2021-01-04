@@ -24,7 +24,9 @@ Installation instructions:
 
 	This application requires the following in order to run:
 		A Python interpreter must be installed. 
+		Currently tensorflow is supported only up to python version 3.8 if you are having issues check your python version.
 			You can download the latest version of python here: https://www.python.org/downloads/
+			Run the installer. Be sure to check the "add python to PATH" checkbox when 
 		 an Alpaca Paper Trading Account, and the associated keys
 			you can sign up for an account by following this link: https://app.alpaca.markets/signup
 			enter your email address and choose a password for your alpaca account

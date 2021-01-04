@@ -392,7 +392,7 @@ class AutoTrader:
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(len(self.symbols)*2, activation = 'relu'))
         self.neural_network.compile(
-            'adam', loss = 'MSLE',
+            'adam', loss = 'cosine similarity',
             metrics = [MeanSquaredError(),RootMeanSquaredError()])
         history = self.neural_network.fit(
             train_generator,
