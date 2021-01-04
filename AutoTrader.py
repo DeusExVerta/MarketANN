@@ -49,7 +49,7 @@ class AutoTrader:
                              {
                                  "class" : "logging.handlers.TimedRotatingFileHandler",
                                  "formatter": 'default',
-                                 "filename": "Log.log",
+                                 "filename": "Log",
                                  "when": "D",
                                  "backupCount": 5
                                  }
