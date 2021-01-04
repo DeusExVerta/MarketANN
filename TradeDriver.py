@@ -16,7 +16,7 @@ with open('stdout.txt', 'w') as stdoutfile:
     sys.stdout = stdoutfile
     with open('stderr.txt', 'w') as stderrfile:
         sys.stderr = stderrfile
-
+    
         import AutoTrader
         import pyautogui as gui
         import traceback
@@ -35,5 +35,5 @@ with open('stdout.txt', 'w') as stdoutfile:
                     traceback.print_tb(ex.__traceback__,file = tbfile)
             finally:
                 gui.alert("Please check your internet connection and account information and try running the script again.","Application Terminated")
-                
+                    
         

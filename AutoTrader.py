@@ -220,7 +220,7 @@ class AutoTrader:
 
     def get_universe(self):
         #if the universe file does not exist raise FileNotFoundError
-        symbols = list()
+        self.symbols = list()
         if path.exists('universe'):
             self.symbols = self.read_universe()
             self.get_network()
@@ -315,7 +315,7 @@ class AutoTrader:
             if not data[0]=='day':
                 scaled = self.scaler[data].inverse_transform(np.array(data_frame.loc[:,data]).reshape(-1,1))
                 for i in range(len(scaled)):
-                    df.loc[i,data] = scaled[i][0]
+                    df.loc[i,[data]] = scaled[i][0]
         return df
                     
     #obtain OHLCV bar data for securities returns a DataFrame for the past 
