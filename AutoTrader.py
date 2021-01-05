@@ -12,8 +12,10 @@ import numpy as np
 
 from sklearn import preprocessing as spp
 from sklearn.preprocessing import OneHotEncoder
-
+import os, errno
 from os import path
+#suppress tf messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import keras
 from keras.preprocessing.sequence import TimeseriesGenerator
@@ -27,7 +29,7 @@ import logging.config
 import logging
 
 import configparser
-import os, errno
+
 
 class AutoTrader:
     def __init__(self):
@@ -63,7 +65,8 @@ class AutoTrader:
         #parse the config file and get the users keys setting them as
         #environment variables for this process and all children.
         config = configparser.ConfigParser()
-        config.read('config.txt')
+        with open('config.txt', 'r') as configfile:
+            config.read_file(configfile,'config.txt')
         if config['APIKEYS']['API_Key_ID'] != '':
             os.environ['APCA_API_KEY_ID'] = config['APIKEYS']['API_Key_ID']
         if config['APIKEYS']['Secret_Key'] != '':

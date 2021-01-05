@@ -35,5 +35,8 @@ with open('stdout.txt', 'w') as stdoutfile:
                     traceback.print_tb(ex.__traceback__,file = tbfile)
             finally:
                 gui.alert("Please check your internet connection and account information and try running the script again.","Application Terminated")
+                #return std streams so aplication doesn't hang
+                sys.stdout = sys.__stdout__
+                sys.stderr = sys.__stderr__
                     
         

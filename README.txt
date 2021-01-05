@@ -43,10 +43,11 @@ Installation instructions:
 			Alpaca Trade API
 			Numpy
 			Pandas
+			pyautogui
 
 		to install these packages, open command prompt from the start menu and run the following command:
 
-	 		pip install numpy==1.19.3 pandas sklearn tensorflow keras alpaca-trade-api
+	 		pip install numpy==1.19.3 pandas sklearn tensorflow keras alpaca-trade-api pyautogui
 
 		Once the command has finished you have completed the installation.
 
