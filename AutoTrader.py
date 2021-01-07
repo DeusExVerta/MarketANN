@@ -29,8 +29,7 @@ import logging.config
 import logging
 
 import configparser
-
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
 
 class AutoTrader:
     def __init__(self):
@@ -244,6 +243,8 @@ class AutoTrader:
             data_frame = self.get_bar_frame(self.symbols)
             logging.info('Training Data Fetched')
             self.history = self.train_neural_network(data_frame)
+            AutoTrader.plot_history(self.history, self.seq_length)
+
 
     def get_scaler(self):
         #check to ensure scaler file exists
@@ -264,12 +265,12 @@ class AutoTrader:
     def timeseries_prediction(self, data_frame, window_size):
         #takes a data frame and expected length/window size and returns a 
         #data frame containing the predicted change in high and low prices
-        data_frame = self.preprocess(data_frame, window_size, algo_time=data_frame.index[-1])
+        data_frame = self.preprocess(data_frame, window_size+1, algo_time=data_frame.index[-1])
         tdg = self.create_generator(data_frame)
         pred = pd.DataFrame(self.neural_network.predict(tdg))
         pred.set_axis(data_frame.loc[:,data_frame.columns.map(lambda x: x[1].startswith('high')|x[1].startswith('low'))].columns, axis = 'columns', inplace = True)
         pred = self.inverse_scaling(pred)
-        pred.set_axis(data_frame.iloc[self.seq_length:].index, axis = 'index', inplace = True)
+        pred.set_axis(data_frame.iloc[self.seq_length+1:].index, axis = 'index', inplace = True)
         return pred
     
     def create_generator(self, data_frame):
@@ -382,7 +383,7 @@ class AutoTrader:
             
     #create and train the neural network initially with an 80/20 training/validation split.
     # input shape (timesteps, 5*Symbols + 7)
-    def train_neural_network(self, data_frame, window_size = None, epochs = 15, save_model = True):
+    def train_neural_network(self, data_frame, window_size = None, epochs = 8, save_model = True):
         if window_size == None:
             window_size = self.window_size
         data_frame = self.preprocess(data_frame,window_size)
@@ -392,7 +393,8 @@ class AutoTrader:
         train_generator = self.create_generator(train)
         val_generator = self.create_generator(validation)
         self.neural_network = Sequential()
-        self.neural_network.add(LSTM(64,input_shape = (self.seq_length,(len(self.symbols)*5+7))))
+        self.neural_network.add(LSTM(128,input_shape = (self.seq_length,(len(self.symbols)*5+7))))
+        self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(10, activation = 'relu'))
         self.neural_network.add(Dense(len(self.symbols)*2, activation = 'linear'))
         self.neural_network.compile(
@@ -452,3 +454,12 @@ class AutoTrader:
         #Scale data in columns
         df = self.scale_data(df,initial)
         return df
+    
+    def plot_history(history,seq_length):
+        plt.plot(history.history['loss'])
+        plt.plot(history.history['val_loss'])
+        plt.title(str.format('model loss (seq_length = {})',seq_length))
+        plt.ylabel('loss')
+        plt.xlabel('epoch')
+        plt.legend(['train', 'test'], loc='upper left')
+        plt.show()
