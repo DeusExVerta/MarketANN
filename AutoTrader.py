@@ -30,6 +30,7 @@ import logging
 
 import configparser
 
+import matplotlib.pyplot as plt
 
 class AutoTrader:
     def __init__(self):
@@ -273,9 +274,9 @@ class AutoTrader:
     
     def create_generator(self, data_frame):
         #create sequences of 10 days woth of data using keras Timeseries Generator
-         targets = data_frame.loc[:,data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))]
+         targets = data_frame.loc[:,data_frame.columns.map(lambda t: t[1].startswith('h') or t[1].startswith('l'))].iloc[1:]
          tdg = TimeseriesGenerator(
-             data_frame.to_numpy(),
+             data_frame.iloc[:-1].to_numpy(),
              targets.to_numpy(),
              self.seq_length,
              batch_size=10)
@@ -381,7 +382,7 @@ class AutoTrader:
             
     #create and train the neural network initially with an 80/20 training/validation split.
     # input shape (timesteps, 5*Symbols + 7)
-    def train_neural_network(self, data_frame, window_size = None, epochs = 10, save_model = True):
+    def train_neural_network(self, data_frame, window_size = None, epochs = 15, save_model = True):
         if window_size == None:
             window_size = self.window_size
         data_frame = self.preprocess(data_frame,window_size)
@@ -393,9 +394,9 @@ class AutoTrader:
         self.neural_network = Sequential()
         self.neural_network.add(LSTM(64,input_shape = (self.seq_length,(len(self.symbols)*5+7))))
         self.neural_network.add(Dense(10, activation = 'relu'))
-        self.neural_network.add(Dense(len(self.symbols)*2, activation = 'relu'))
+        self.neural_network.add(Dense(len(self.symbols)*2, activation = 'linear'))
         self.neural_network.compile(
-            'adam', loss = 'cosine similarity',
+            'adam', loss = 'cosine_similarity',
             metrics = [MeanSquaredError(),RootMeanSquaredError()])
         history = self.neural_network.fit(
             train_generator,
@@ -428,7 +429,7 @@ class AutoTrader:
         add_df = pd.DataFrame(index = pd.date_range(start = algo_time - pd.Timedelta(window_size,'D') ,end = algo_time).normalize().difference(data_frame.index), columns = data_frame.columns, dtype = 'float64')
         df = pd.concat([data_frame,add_df])
         df.sort_index(inplace = True)
-        df.replace([np.inf,-np.inf], method='bfill',inplace = True)
+        
     
         bad_cols = [col for col in df.columns if df[col].isnull().all()]
         df.loc[:,bad_cols] = 0
@@ -446,9 +447,8 @@ class AutoTrader:
             [['day','day','day','day','day','day','day'],oneHotEncoder.get_feature_names()])
         df = time_data_frame.join(df)
         df.columns = pd.MultiIndex.from_tuples(df.columns)
-
+        
+        df.replace([np.inf,-np.inf], method='bfill',inplace = True)
         #Scale data in columns
         df = self.scale_data(df,initial)
         return df
-    
-
