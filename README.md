@@ -1,4 +1,4 @@
-Automatic Stock Trading Bot README:
+# Automatic Stock Trading Bot
 This is a proof of concept project which uses an artificial neural network to perform trades on
 Alpaca. https://alpaca.markets/ the application follows an overnight hold trade strategy; selling in the morning 
 and placing orders to buy those stocks with the highest estimated gains from today to tommorow during the afternoon.
@@ -6,7 +6,7 @@ This project was developed for and tested on alpaca's paper trading environment 
 This project contains software developed at the Apache Software Foundation, and software developed by Alpaca 
 which has been used in accordance with the Apache License 2.0 available at http://www.apache.org/licenses/LICENSE-2.0.txt
 
-Project Manifest:
+## Project Manifest:
 	-.pylint.d
 	-Network
 	-AutoTrader.py
@@ -17,7 +17,7 @@ Project Manifest:
 	-TradeDriver.py
 	-universe
 
-Installation instructions:
+## Installation instructions:
 	To install this application place all files listed in the project manifest into the following directory:
 
 		C:\Program Files\TradeBot\
@@ -51,7 +51,7 @@ Installation instructions:
 
 		Once the command has finished you have completed the installation.
 
-Running the application:
+## Running the application:
 
 	Navigate to the folder in which you have installed the script files by running the following command:
 
